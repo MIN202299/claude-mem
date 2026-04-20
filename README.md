@@ -178,6 +178,7 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 - 🤖 **Automatic Operation** - No manual intervention required
 - 🔗 **Citations** - Reference past observations with IDs (access via http://localhost:37777/api/observation/{id} or view all in the web viewer at http://localhost:37777)
 - 🧪 **Beta Channel** - Try experimental features like Endless Mode via version switching
+- 🔌 **Custom Provider** - Use any OpenAI-compatible API (Ollama, vLLM, Together AI, LiteLLM) as the LLM backend
 
 ---
 
@@ -344,6 +345,67 @@ Language-specific modes follow the pattern `code--[lang]` where `[lang]` is the 
 #### After Changing Mode
 
 Restart Claude Code to apply the new mode configuration.
+
+---
+
+### Custom Provider Configuration
+
+Claude-Mem supports any **OpenAI-compatible API** as the LLM backend for observation extraction, including Ollama, vLLM, Together AI, DeepInfra, and LiteLLM.
+
+#### How to Configure
+
+Edit your settings file at `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_CUSTOM_BASE_URL": "http://localhost:11434/v1",
+  "CLAUDE_MEM_CUSTOM_API_KEY": "",
+  "CLAUDE_MEM_CUSTOM_MODEL": "llama-3.1-8b",
+  "CLAUDE_MEM_CUSTOM_DISPLAY_NAME": "Ollama",
+  "CLAUDE_MEM_CUSTOM_MAX_CONTEXT_MESSAGES": "20",
+  "CLAUDE_MEM_CUSTOM_MAX_TOKENS": "100000"
+}
+```
+
+| Setting | Description |
+|---|---|
+| `CLAUDE_MEM_CUSTOM_BASE_URL` | Base URL of the OpenAI-compatible API (required) |
+| `CLAUDE_MEM_CUSTOM_API_KEY` | API key for authenticated providers (optional) |
+| `CLAUDE_MEM_CUSTOM_MODEL` | Model name to use (required, e.g. `llama-3.1-8b`) |
+| `CLAUDE_MEM_CUSTOM_DISPLAY_NAME` | Display name shown in the UI (default: `Custom`) |
+| `CLAUDE_MEM_CUSTOM_MAX_CONTEXT_MESSAGES` | Max messages in context window (default: `20`) |
+| `CLAUDE_MEM_CUSTOM_MAX_TOKENS` | Max estimated token safety limit (default: `100000`) |
+
+You can also configure these settings through the web viewer UI at http://localhost:37777 → Settings.
+
+#### Examples
+
+**Ollama (local):**
+```json
+{
+  "CLAUDE_MEM_CUSTOM_BASE_URL": "http://localhost:11434/v1",
+  "CLAUDE_MEM_CUSTOM_MODEL": "llama-3.1-8b"
+}
+```
+
+**Together AI:**
+```json
+{
+  "CLAUDE_MEM_CUSTOM_BASE_URL": "https://api.together.xyz/v1",
+  "CLAUDE_MEM_CUSTOM_API_KEY": "your-api-key",
+  "CLAUDE_MEM_CUSTOM_MODEL": "meta-llama/Llama-3.1-70B-Instruct-Turbo"
+}
+```
+
+**LiteLLM proxy:**
+```json
+{
+  "CLAUDE_MEM_CUSTOM_BASE_URL": "http://localhost:4000",
+  "CLAUDE_MEM_CUSTOM_MODEL": "your-model-name"
+}
+```
+
+After configuring, select the custom provider in the Viewer UI or set `CLAUDE_MEM_CUSTOM_BASE_URL` to enable automatic fallback.
 ---
 
 ## Development
