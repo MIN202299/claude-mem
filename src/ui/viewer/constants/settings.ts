@@ -17,6 +17,10 @@ export const DEFAULT_SETTINGS = {
   CLAUDE_MEM_OPENROUTER_SITE_URL: '',
   CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',
+  // Custom Provider Configuration
+  CLAUDE_MEM_CUSTOM_BASE_URL: '',
+  CLAUDE_MEM_CUSTOM_API_KEY: '',
+  CLAUDE_MEM_CUSTOM_MODEL: '',
 
   // Token Economics — match SettingsDefaultsManager defaults (off by default to keep context lean)
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'false',

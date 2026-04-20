@@ -346,6 +346,7 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="custom">Custom (OpenAI-compatible endpoint)</option>
                 </select>
               </FormField>
 
@@ -447,6 +448,44 @@ export function ContextSettingsModal({
                       value={formState.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
                       placeholder="claude-mem"
+                    />
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'custom' && (
+                <>
+                  <FormField
+                    label="API Base URL"
+                    tooltip="Base URL of your OpenAI-compatible API endpoint (e.g., http://localhost:11434/v1 for Ollama)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_CUSTOM_BASE_URL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CUSTOM_BASE_URL', e.target.value)}
+                      placeholder="e.g., http://localhost:11434/v1"
+                    />
+                  </FormField>
+                  <FormField
+                    label="API Key (Optional)"
+                    tooltip="API key if your provider requires authentication"
+                  >
+                    <input
+                      type="password"
+                      value={formState.CLAUDE_MEM_CUSTOM_API_KEY || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CUSTOM_API_KEY', e.target.value)}
+                      placeholder="Enter API key (leave empty if not required)..."
+                    />
+                  </FormField>
+                  <FormField
+                    label="Model"
+                    tooltip="Model name/ID to use (e.g., llama-3.1-8b, qwen2.5-72b)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_CUSTOM_MODEL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CUSTOM_MODEL', e.target.value)}
+                      placeholder="e.g., llama-3.1-8b"
                     />
                   </FormField>
                 </>

@@ -82,6 +82,10 @@ export interface Settings {
   CLAUDE_MEM_OPENROUTER_MODEL?: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL?: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME?: string;
+  // Custom Provider Configuration
+  CLAUDE_MEM_CUSTOM_BASE_URL?: string;
+  CLAUDE_MEM_CUSTOM_API_KEY?: string;
+  CLAUDE_MEM_CUSTOM_MODEL?: string;
 
   // Token Economics Display
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS?: string;

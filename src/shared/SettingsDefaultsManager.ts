@@ -31,6 +31,13 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
   CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
   CLAUDE_MEM_OPENROUTER_MAX_TOKENS: string;
+  // Custom Provider Configuration
+  CLAUDE_MEM_CUSTOM_BASE_URL: string;
+  CLAUDE_MEM_CUSTOM_API_KEY: string;
+  CLAUDE_MEM_CUSTOM_MODEL: string;
+  CLAUDE_MEM_CUSTOM_DISPLAY_NAME: string;
+  CLAUDE_MEM_CUSTOM_MAX_CONTEXT_MESSAGES: string;
+  CLAUDE_MEM_CUSTOM_MAX_TOKENS: string;
   // System Configuration
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
@@ -102,6 +109,13 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
     CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
+    // Custom Provider Configuration
+    CLAUDE_MEM_CUSTOM_BASE_URL: '',  // e.g. http://localhost:11434/v1 for Ollama
+    CLAUDE_MEM_CUSTOM_API_KEY: '',  // Optional, for authenticated providers
+    CLAUDE_MEM_CUSTOM_MODEL: '',  // e.g. llama-3.1-8b
+    CLAUDE_MEM_CUSTOM_DISPLAY_NAME: 'Custom',
+    CLAUDE_MEM_CUSTOM_MAX_CONTEXT_MESSAGES: '20',
+    CLAUDE_MEM_CUSTOM_MAX_TOKENS: '100000',
     // System Configuration
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
