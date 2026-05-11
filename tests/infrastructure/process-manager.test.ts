@@ -16,6 +16,8 @@ import {
   spawnDaemon,
   resolveWorkerRuntimePath,
   runOneTimeChromaMigration,
+  captureProcessStartToken,
+  verifyPidFileOwnership,
   type PidInfo
 } from '../../src/services/infrastructure/index.js';
 
@@ -23,18 +25,15 @@ const DATA_DIR = path.join(homedir(), '.claude-mem');
 const PID_FILE = path.join(DATA_DIR, 'worker.pid');
 
 describe('ProcessManager', () => {
-  // Store original PID file content if it exists
   let originalPidContent: string | null = null;
 
   beforeEach(() => {
-    // Backup existing PID file if present
     if (existsSync(PID_FILE)) {
       originalPidContent = readFileSync(PID_FILE, 'utf-8');
     }
   });
 
   afterEach(() => {
-    // Restore original PID file or remove test one
     if (originalPidContent !== null) {
       writeFileSync(PID_FILE, originalPidContent);
       originalPidContent = null;
@@ -99,7 +98,6 @@ describe('ProcessManager', () => {
     });
 
     it('should return null for missing file', () => {
-      // Ensure file doesn't exist
       removePidFile();
 
       const result = readPidFile();
@@ -132,11 +130,9 @@ describe('ProcessManager', () => {
     });
 
     it('should not throw for missing file', () => {
-      // Ensure file doesn't exist
       removePidFile();
       expect(existsSync(PID_FILE)).toBe(false);
 
-      // Should not throw
       expect(() => removePidFile()).not.toThrow();
     });
   });
@@ -155,9 +151,9 @@ describe('ProcessManager', () => {
     });
 
     it('should parse DD-HH:MM:SS format', () => {
-      expect(parseElapsedTime('1-00:00:00')).toBe(1440);  // 1 day
-      expect(parseElapsedTime('2-12:30:00')).toBe(3630);  // 2 days + 12.5 hours
-      expect(parseElapsedTime('0-01:00:00')).toBe(60);    // 1 hour
+      expect(parseElapsedTime('1-00:00:00')).toBe(1440);  
+      expect(parseElapsedTime('2-12:30:00')).toBe(3630);  
+      expect(parseElapsedTime('0-01:00:00')).toBe(60);    
     });
 
     it('should return -1 for empty or invalid input', () => {
@@ -221,7 +217,6 @@ describe('ProcessManager', () => {
         configurable: true
       });
 
-      // 2.0x of 333 = 666 (rounds to 666)
       const result = getPlatformTimeout(333);
 
       expect(result).toBe(666);
@@ -342,7 +337,6 @@ describe('ProcessManager', () => {
     });
 
     it('should return false for a non-existent PID', () => {
-      // Use a very high PID that's extremely unlikely to exist
       expect(isProcessAlive(2147483647)).toBe(false);
     });
 
@@ -361,9 +355,117 @@ describe('ProcessManager', () => {
     });
   });
 
+  describe('captureProcessStartToken', () => {
+    const supported = process.platform === 'linux' || process.platform === 'darwin';
+
+    it.if(supported)('returns a non-empty token for the current process', () => {
+      const token = captureProcessStartToken(process.pid);
+      expect(typeof token).toBe('string');
+      expect((token ?? '').length).toBeGreaterThan(0);
+    });
+
+    it.if(supported)('returns a stable token across calls for the same PID', () => {
+      const first = captureProcessStartToken(process.pid);
+      const second = captureProcessStartToken(process.pid);
+      expect(first).toBe(second);
+    });
+
+    it('returns null for a non-existent PID', () => {
+      expect(captureProcessStartToken(2147483647)).toBeNull();
+    });
+
+    it('returns null for invalid PIDs', () => {
+      expect(captureProcessStartToken(0)).toBeNull();
+      expect(captureProcessStartToken(-1)).toBeNull();
+      expect(captureProcessStartToken(1.5)).toBeNull();
+      expect(captureProcessStartToken(NaN)).toBeNull();
+    });
+
+    it('returns null on win32 (liveness-only fallback path)', () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      try {
+        expect(captureProcessStartToken(process.pid)).toBeNull();
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      }
+    });
+  });
+
+  describe('writePidFile (start-token capture)', () => {
+    const supported = process.platform === 'linux' || process.platform === 'darwin';
+
+    it.if(supported)('auto-captures a startToken when writing for the current process', () => {
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
+      const persisted = readPidFile();
+      expect(persisted).not.toBeNull();
+      expect(typeof persisted!.startToken).toBe('string');
+      expect((persisted!.startToken ?? '').length).toBeGreaterThan(0);
+    });
+
+    it('preserves a caller-supplied startToken verbatim', () => {
+      const provided = 'caller-supplied-token-xyz';
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString(), startToken: provided });
+      const persisted = readPidFile();
+      expect(persisted!.startToken).toBe(provided);
+    });
+
+    it('omits startToken when the target PID has no readable token (dead PID)', () => {
+      writePidFile({ pid: 2147483647, port: 37777, startedAt: new Date().toISOString() });
+      const persisted = readPidFile();
+      expect(persisted).not.toBeNull();
+      expect(persisted!.startToken).toBeUndefined();
+    });
+  });
+
+  describe('verifyPidFileOwnership', () => {
+    const supported = process.platform === 'linux' || process.platform === 'darwin';
+
+    it('returns false for null input', () => {
+      expect(verifyPidFileOwnership(null)).toBe(false);
+    });
+
+    it('returns false when the PID is not alive', () => {
+      expect(verifyPidFileOwnership({
+        pid: 2147483647,
+        port: 37777,
+        startedAt: new Date().toISOString(),
+        startToken: 'anything'
+      })).toBe(false);
+    });
+
+    it('returns true when no startToken is stored (back-compat with older PID files)', () => {
+      expect(verifyPidFileOwnership({
+        pid: process.pid,
+        port: 37777,
+        startedAt: new Date().toISOString()
+        // intentionally no startToken
+      })).toBe(true);
+    });
+
+    it.if(supported)('returns true when the stored token matches the current PID', () => {
+      const token = captureProcessStartToken(process.pid);
+      expect(token).not.toBeNull();
+      expect(verifyPidFileOwnership({
+        pid: process.pid,
+        port: 37777,
+        startedAt: new Date().toISOString(),
+        startToken: token!
+      })).toBe(true);
+    });
+
+    it.if(supported)('returns false when the stored token does not match (PID reused)', () => {
+      expect(verifyPidFileOwnership({
+        pid: process.pid,
+        port: 37777,
+        startedAt: new Date().toISOString(),
+        startToken: 'token-from-a-different-incarnation'
+      })).toBe(false);
+    });
+  });
+
   describe('cleanStalePidFile', () => {
     it('should remove PID file when process is dead', () => {
-      // Write a PID file with a non-existent PID
       const staleInfo: PidInfo = {
         pid: 2147483647,
         port: 37777,
@@ -378,7 +480,6 @@ describe('ProcessManager', () => {
     });
 
     it('should keep PID file when process is alive', () => {
-      // Write a PID file with the current process PID (definitely alive)
       const liveInfo: PidInfo = {
         pid: process.pid,
         port: 37777,
@@ -388,7 +489,6 @@ describe('ProcessManager', () => {
 
       cleanStalePidFile();
 
-      // PID file should still exist since process.pid is alive
       expect(existsSync(PID_FILE)).toBe(true);
     });
 
@@ -396,7 +496,6 @@ describe('ProcessManager', () => {
       removePidFile();
       expect(existsSync(PID_FILE)).toBe(false);
 
-      // Should not throw
       expect(() => cleanStalePidFile()).not.toThrow();
     });
   });
@@ -405,7 +504,6 @@ describe('ProcessManager', () => {
     it('should return true for a recently written PID file', () => {
       writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
 
-      // File was just written, should be very recent
       expect(isPidFileRecent(15000)).toBe(true);
     });
 
@@ -418,9 +516,6 @@ describe('ProcessManager', () => {
     it('should return false for a very short threshold on a real file', () => {
       writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
 
-      // With a 0ms threshold, even a just-written file should be "too old"
-      // (mtime is at least 1ms in the past by the time we check)
-      // Use a negative threshold to guarantee false
       expect(isPidFileRecent(-1)).toBe(false);
     });
   });
@@ -429,13 +524,11 @@ describe('ProcessManager', () => {
     it('should update mtime of existing PID file', async () => {
       writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
 
-      // Wait a bit to ensure measurable mtime difference
       await new Promise(r => setTimeout(r, 50));
 
       const statsBefore = statSync(PID_FILE);
       const mtimeBefore = statsBefore.mtimeMs;
 
-      // Wait again to ensure mtime advances
       await new Promise(r => setTimeout(r, 50));
 
       touchPidFile();
@@ -455,71 +548,42 @@ describe('ProcessManager', () => {
 
   describe('spawnDaemon', () => {
     it('should use setsid on Linux when available', () => {
-      // setsid should exist at /usr/bin/setsid on Linux
-      if (process.platform === 'win32') return; // Skip on Windows
+      if (process.platform === 'win32') return; 
 
       const setsidAvailable = existsSync('/usr/bin/setsid');
-      if (!setsidAvailable) return; // Skip if setsid not installed
+      if (!setsidAvailable) return; 
 
-      // Spawn a daemon with a non-existent script (it will fail to start, but we can verify the spawn attempt)
-      // Use a harmless script path — the child will exit immediately
       const pid = spawnDaemon('/dev/null', 39999);
 
-      // setsid spawn should return a PID (the setsid process itself)
       expect(pid).toBeDefined();
       expect(typeof pid).toBe('number');
 
-      // Clean up: kill the spawned process if it's still alive
       if (pid !== undefined && pid > 0) {
         try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ }
       }
     });
 
     it('should return undefined when spawn fails on Windows path', () => {
-      // On non-Windows, this tests the Unix path which should succeed
-      // The function should not throw, only return undefined on failure
       if (process.platform === 'win32') return;
 
-      // Spawning with a totally invalid script should still return a PID
-      // (setsid/spawn succeeds even if the child will exit immediately)
       const result = spawnDaemon('/nonexistent/script.cjs', 39998);
-      // spawn itself should succeed (returns PID), even if child exits
       expect(result).toBeDefined();
 
-      // Clean up
       if (result !== undefined && result > 0) {
         try { process.kill(result, 'SIGKILL'); } catch { /* already exited */ }
       }
     });
 
-    /**
-     * Documents the spawnDaemon return contract for the Windows `0` PID
-     * success sentinel. PowerShell `Start-Process` does not return the spawned
-     * PID, so the Windows branch returns 0 as a "spawn dispatched" sentinel.
-     * Callers MUST use `pid === undefined` to detect failure — never falsy
-     * checks like `if (!pid)`, which would silently treat success as failure
-     * because 0 is falsy in JavaScript.
-     *
-     * This contract test exists so any future contributor introducing
-     * `if (!pid)` against a spawnDaemon return value (or its wrapper) sees a
-     * failing assertion that documents why the falsy check is incorrect.
-     * See PR #1645 review feedback for context.
-     */
     it('Windows 0 PID success sentinel must NOT be detected via falsy check', () => {
       const windowsSuccessSentinel: number | undefined = 0;
       const failureSentinel: number | undefined = undefined;
 
-      // Correct contract: undefined === failure, anything else === success.
       expect(windowsSuccessSentinel === undefined).toBe(false);
       expect(failureSentinel === undefined).toBe(true);
 
-      // Demonstrates the bug a future regression would introduce:
-      // `if (!pid)` is true for BOTH the Windows success sentinel AND the
-      // genuine failure sentinel — silently treating success as failure.
-      expect(!windowsSuccessSentinel).toBe(true); // ← this is the trap
+      expect(!windowsSuccessSentinel).toBe(true); 
       expect(!failureSentinel).toBe(true);
 
-      // Therefore, callers must use strict undefined comparison.
       const isFailure = (pid: number | undefined) => pid === undefined;
       expect(isFailure(windowsSuccessSentinel)).toBe(false);
       expect(isFailure(failureSentinel)).toBe(true);
@@ -528,26 +592,21 @@ describe('ProcessManager', () => {
 
   describe('SIGHUP handling', () => {
     it('should have SIGHUP listeners registered (integration check)', () => {
-      // Verify that SIGHUP listener registration is possible on Unix
       if (process.platform === 'win32') return;
 
-      // Register a test handler, verify it works, then remove it
       let received = false;
       const testHandler = () => { received = true; };
 
       process.on('SIGHUP', testHandler);
       expect(process.listenerCount('SIGHUP')).toBeGreaterThanOrEqual(1);
 
-      // Clean up the test handler
       process.removeListener('SIGHUP', testHandler);
     });
 
     it('should ignore SIGHUP when --daemon is in process.argv', () => {
       if (process.platform === 'win32') return;
 
-      // Simulate the daemon SIGHUP handler logic
       const isDaemon = process.argv.includes('--daemon');
-      // In test context, --daemon is not in argv, so this tests the branch logic
       expect(isDaemon).toBe(false);
 
       // Verify the non-daemon path: SIGHUP should trigger shutdown (covered by registerSignalHandlers)
@@ -568,37 +627,30 @@ describe('ProcessManager', () => {
     });
 
     it('should wipe chroma directory and write marker file', () => {
-      // Create a fake chroma directory with data
       const chromaDir = path.join(testDataDir, 'chroma');
       mkdirSync(chromaDir, { recursive: true });
       writeFileSync(path.join(chromaDir, 'test-data.bin'), 'fake chroma data');
 
       runOneTimeChromaMigration(testDataDir);
 
-      // Chroma dir should be gone
       expect(existsSync(chromaDir)).toBe(false);
-      // Marker file should exist
       expect(existsSync(path.join(testDataDir, '.chroma-cleaned-v10.3'))).toBe(true);
     });
 
     it('should skip when marker file already exists (idempotent)', () => {
-      // Write marker file first
       writeFileSync(path.join(testDataDir, '.chroma-cleaned-v10.3'), 'already done');
 
-      // Create a chroma directory that should NOT be wiped
       const chromaDir = path.join(testDataDir, 'chroma');
       mkdirSync(chromaDir, { recursive: true });
       writeFileSync(path.join(chromaDir, 'important.bin'), 'should survive');
 
       runOneTimeChromaMigration(testDataDir);
 
-      // Chroma dir should still exist (migration was skipped)
       expect(existsSync(chromaDir)).toBe(true);
       expect(existsSync(path.join(chromaDir, 'important.bin'))).toBe(true);
     });
 
     it('should handle missing chroma directory gracefully', () => {
-      // No chroma dir exists — should just write marker without error
       expect(() => runOneTimeChromaMigration(testDataDir)).not.toThrow();
       expect(existsSync(path.join(testDataDir, '.chroma-cleaned-v10.3'))).toBe(true);
     });

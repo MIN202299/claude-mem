@@ -4,6 +4,620 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.0.1] - 2026-05-10
+
+## Bug fixes
+
+### MCP server
+- **#2371** — drop `${_R%/}` parameter-expansion trim in `.mcp.json` that tripped Claude Code's MCP validator
+
+### Environment isolation
+- **#2357** — block `ANTHROPIC_BASE_URL` leak; use a three-branch OAuth-skip predicate
+- Add `CLAUDE_MEM_ENV_FILE` lazy resolver so tests (and multi-profile users) can redirect the env-file path without module-load-order constraints
+
+### Worker lifecycle
+- Classify Claude SDK HTTP 400 as **unrecoverable** so the worker stops retrying a doomed request
+- Stop hook crash hardened: `onclose` handler now performs background tree-kill on unexpected subprocess exit
+
+### Chroma
+- **#2313** — enforce a single `chroma-mcp` subprocess per worker (singleton via `disposeCurrentSubprocess()` on every code path; tree-kill of orphans on dispose)
+- Pin `onnxruntime>=1.20` and `protobuf<7` to fix `INVALID_PROTOBUF` on macOS arm64
+
+### Build
+- Polyfill `import.meta.url` to `pathToFileURL(__filename)` in the CJS worker bundle so ESM-style code resolves correctly (CodeRabbit-driven follow-up)
+
+### Tests / review
+- `tests/env-isolation.test.ts` no longer mutates the real `~/.claude-mem/.env`; OAuth spy wrapped in try/finally to avoid leaks across runs
+- 3 new chroma-mcp regression tests for #2313 (singleton enforcement)
+
+### Misc
+- Daily dependency bump per CLAUDE.md maintenance policy
+
+Full diff: https://github.com/thedotmack/claude-mem/pull/2394
+
+## [13.0.0] - 2026-05-08
+
+## Highlights
+
+This is the **claude-mem 13** major release, landing the Server Beta runtime and the project's relicense.
+
+### Server Beta runtime (opt-in)
+- Independent server-beta service with its own lifecycle (`claude-mem server start/status/stop`)
+- Postgres-backed observation storage
+- BullMQ + Redis observation queue engine (gated behind `CLAUDE_MEM_QUEUE_ENGINE=bullmq`, fail-fast)
+- New `/v1` REST API surface (events, sessions, memories, search, context, audit, jobs)
+- API-key auth + Better-Auth proxy
+- Outbox pattern for transactional event-to-job pipelines
+- Generation-job primitives (`ServerJobQueue`, `ActiveServerBetaQueueManager`, deterministic colon-free SHA-256 job IDs)
+- Docker Compose + E2E harness for the new stack
+
+### Licensing
+- Repository relicensed from **AGPL-3.0** to **Apache-2.0**
+- `NOTICE` file added
+- `docs/license.md` and `docs/ip-boundary.md` clarify the OSS / commercial boundary
+- `ragtime/` subproject also relicensed to Apache-2.0
+
+### Installer
+- Server Beta is exposed as an installer option (default off — open-source core is unaffected)
+
+## Migration notes
+- Existing users on the worker-era plugin keep working — no breaking changes for the default install
+- Server Beta is opt-in. Worker continues to run on its existing port and SQLite store.
+- See `docs/migration-worker-to-server.md` for forward-looking migration guidance
+
+## Compatibility
+- Node ≥ 20, Bun ≥ 1.0
+- Server Beta requires Postgres + Redis (only when enabled)
+
+Full diff: https://github.com/thedotmack/claude-mem/compare/v12.7.5...v13.0.0
+
+## [12.7.5] - 2026-05-07
+
+Patch release for npx installs that hit an existing Codex marketplace registration.
+
+Fixes:
+- If Codex already has claude-mem-local registered from a different source, the installer now removes that stale registration and re-adds the local npx marketplace instead of failing.
+- Keeps Codex plugin_hooks enablement and legacy AGENTS cleanup after the marketplace registration succeeds.
+- Updates the release workflow instructions to use npm run build-and-sync instead of plain npm run build so the local marketplace and worker are synced during releases.
+
+Validation:
+- npm run build-and-sync
+- bun test tests/install-non-tty.test.ts tests/infrastructure/plugin-distribution.test.ts tests/servers/mcp-tool-schemas.test.ts tests/setup-runtime.test.ts tests/hook-command.test.ts
+- Docker smoke with codex-cli 0.128.0 reproducing the remote-to-local marketplace source conflict and verifying install completion.
+- npx --yes claude-mem@12.7.5 --version
+
+## [12.7.4] - 2026-05-07
+
+Patch release for the Codex mem-search marketplace fix.
+
+Highlights:
+- Restores Codex access to the claude-mem MCP/search plugin by pointing the Codex marketplace at the bundled plugin root.
+- Adds resilient MCP launcher fallbacks for local installs, Codex plugin cache installs, Claude plugin cache installs, and remote marketplace clones.
+- Registers Codex plugin marketplaces during install, enables plugin_hooks, and cleans up legacy AGENTS-based Codex context injection.
+- Includes the Codex session-start hook migration and Codex version-mismatch investigation plan.
+
+Validation:
+- npm run build
+- bun test tests/install-non-tty.test.ts tests/infrastructure/plugin-distribution.test.ts tests/servers/mcp-tool-schemas.test.ts tests/setup-runtime.test.ts tests/hook-command.test.ts
+- Docker smoke with codex-cli 0.128.0 for local install, remote marketplace add/upgrade, and MCP initialize.
+
+## [12.7.3] - 2026-05-07
+
+Patch release for the reliability fixes merged in PR #2344.
+
+- Stops context-overflow and quota hard-stop failures from restarting observer generators and burning subscription quota.
+- Makes Stop hook transcript lookup failures non-blocking, so missing worktree transcript paths do not re-wake Claude Code in a loop.
+- Hardens MCP/plugin startup path resolution when host plugin-root environment variables are absent.
+- Accepts legacy install markers while keeping new marker writes on the JSON format.
+- Fixes export-memories to honor isolated data dirs, validate worker ports, and send the worker route's canonical session-id field.
+- Makes pending_messages repair safer and removes stale worker_pid assumptions from the current queue/schema path.
+- Adds a focused PR babysit status helper for low-noise review/check monitoring.
+
+## [12.7.2] - 2026-05-06
+
+### Fixed
+- Disable Claude Code built-in auto-memory during claude-code installs by setting `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in Claude settings.
+- Make JSON config writes crash-safe, durable, symlink-safe, and safe for dangling symlink destinations.
+- Add regression coverage for atomic JSON writes through symlinked and dangling-symlink settings paths.
+
+## [12.7.1] - 2026-05-06
+
+## Added
+- Package the new `babysit` skill for monitoring PR checks, review comments, and unresolved review threads until a PR is merge-ready.
+
+## Verification
+- `npm run build`
+- `npm publish` completed for `claude-mem@12.7.1`
+
+## [12.7.0] - 2026-05-06
+
+## Added
+- Add native Codex hooks integration through the Codex plugin marketplace.
+- Add Codex hook payload normalization, file-context extraction, and Stop hook observation support.
+- Add Codex installer support for `npx claude-mem@latest install` with Codex CLI version guidance.
+
+## Fixed
+- Avoid slow observation flow retries by replacing the worker-side initialization wait with hook-side readiness polling.
+- Keep Codex file-context extraction from consuming boolean flags like `cat -n`.
+- Include `bun-runner.js` in hook distribution verification.
+
+## [12.6.4] - 2026-05-05
+
+## Fixed
+- Drain invalid/non-XML observer responses so pending agent observations are cleared instead of retrying forever (PR #2316 / issue #2315).
+- Correct all plugin manifest versions so Claude, Codex, OpenClaw, bundled plugin, and npm metadata agree on 12.6.4.
+
+## [12.6.5] - 2026-05-05
+
+### Added
+- Installer now keeps the Claude Agent SDK as the single memory-agent path while supporting subscription auth, direct Anthropic API keys, and LiteLLM/custom gateway setup.
+- Added gateway env support for `ANTHROPIC_AUTH_TOKEN` alongside `ANTHROPIC_BASE_URL`.
+
+### Fixed
+- Removed the fixed agent-pool slot timeout so queued memory-agent work waits for process availability instead of dropping pending messages under load.
+- Reset generator failures back to pending messages instead of clearing queued work.
+
+## [12.6.2] - 2026-05-05
+
+## Fix: `npx claude-mem@latest install` no longer hangs on tree-sitter-swift
+
+### What broke in 12.6.1
+
+PR #2300 moved 21 tree-sitter grammar packages from root `devDependencies` → root `dependencies`. As a result, `npx claude-mem@12.6.1 install` started fetching all 21 grammars at npx time. `tree-sitter-swift`'s postinstall pulled a nested `tree-sitter-cli` that downloads a Rust binary from GitHub and SIGINT'd the install:
+
+```
+npm error path .../node_modules/claude-mem/node_modules/tree-sitter-swift/node_modules/tree-sitter-cli
+npm error command failed
+npm error signal SIGINT
+npm error Downloading https://github.com/tree-sitter/tree-sitter/releases/download/v0.23.2/tree-sitter-macos-arm64.gz
+```
+
+npm doesn't honor the bun-only `trustedDependencies` allowlist, so postinstalls always run on a bare `npx` fetch.
+
+### Fix (PR #2305)
+
+Move the 21 grammar packages back to root `devDependencies`. The marketplace plugin install path is untouched — `plugin/package.json` keeps them as runtime deps and `bun install` (in `installPluginDependencies`) honors `trustedDependencies: ["tree-sitter-cli"]` to skip the harmful postinstalls on every other grammar. Smart-search/smart-outline/smart-unfold continue to work end-to-end.
+
+PR #2300's `--legacy-peer-deps` and `--omit=dev` install.ts changes are kept — they fix a separate, valid marketplace ERESOLVE.
+
+## [12.6.1] - 2026-05-05
+
+## Patch release
+
+### Fixed
+- **install:** marketplace `npm install` no longer fails on tree-sitter peer-dep ERESOLVE. Tree-sitter grammar packages moved from `devDependencies` to `dependencies` and the install command updated to `--omit=dev --legacy-peer-deps` (#2300).
+- **chroma-mcp:** removed ONNX/OpenBLAS thread cap from spawn env to restore performance on multi-core systems.
+
+### Docs
+- Documented the `--legacy-peer-deps` rationale in `runNpmInstallInMarketplace`.
+
+## [12.6.0] - 2026-05-04
+
+## Highlights
+
+**17 issues fixed** and **4 new foundations** introduced via PR #2282 — a 24-cycle review-loop landed across 33 commits.
+
+### New capabilities
+
+- **OAuth keychain reader** (#2215) — `readClaudeOAuthToken()` reads from platform-native credential stores (macOS keychain, Windows DPAPI, Linux libsecret) at worker spawn-time. JWT exp / sidecar `expiresAt` validation refuses stale tokens. Re-login hint surfaced via SessionStart `additionalContext`.
+- **Quota-aware wall-clock guard** (#2234) — new `RateLimitStore` with auth-type gate: `api_key` never aborts; cli/oauth aborts at per-window thresholds (5h:0.95, 7d_opus:0.93, 7d_sonnet:0.92). 15min reset-grace buffer with 0.85 utilization floor. `rateLimits` exposed on `/api/health`.
+- **Network retry helper** (#2254) — `withRetry` honors `ClassifiedProviderError.kind`, exponential backoff with jitter, request-id capture for dedup logging.
+
+### Foundations (new public modules)
+
+- **F1 `spawnHidden`** (`src/shared/spawn.ts`) — `windowsHide: true` default; 8 spawn sites adopted.
+- **F2 `paths`** (`src/shared/paths.ts`) — 24 hardcoded `homedir() + '.claude-mem'` sites collapsed into 18 named accessors. `CLAUDE_MEM_DATA_DIR` flows through 100% of runtime. Self-extending invariant test.
+- **F3 `getUptimeSeconds`** (`src/shared/uptime.ts`) — fixes ms-bug at `Server.ts:165`.
+- **F4 `ClassifiedProviderError`** (`src/services/worker/provider-errors.ts`) — `kind` union (`transient | unrecoverable | rate_limit | quota_exhausted | auth_invalid`); per-provider classifiers; `unrecoverablePatterns` allowlist deleted.
+
+### Bug fixes
+
+- #2188 — empty stdin no longer falls back to `'{}'`; diagnostic log + `CAPTURE_BROKEN` marker
+- #2196 — `ANTHROPIC_BASE_URL` documentation added
+- #2220 / #2253 — chroma-mcp CPU storm (Windows + macOS): thread caps, per-batch watermarks, telemetry off, `killProcessTree` on shutdown
+- #2225 — opencode `_zod.def` crash: Zod schemas replace plain JSON-schema arg shapes
+- #2231 — `SECURITY.md` at repo root populates GitHub Security tab
+- #2233 — Part A: `stripCodeFences()` + fence example removed from prompt (Part B deferred)
+- #2236 — observer agent visible windows on Windows (consumed F1)
+- #2237 / #2238 — hardcoded paths (consumed F2)
+- #2240 — dedupe `observationIds` before Chroma sync
+- #2242 — `check-pending-queue.ts` points at `/api/processing-status` + `/api/processing`; honors `CLAUDE_MEM_WORKER_PORT`
+- #2243 — `scripts/sync-marketplace.cjs` rsync excludes stale `scripts/package.json` + `scripts/node_modules`
+- #2244 — `unrecoverablePatterns` allowlist deleted; worker dispatches on `error.kind`
+- #2247 — Codex `task_complete` event added to session-end matched types
+- #2248 — Cursor sessions never summarized: 3 bugs in stop→summarize path fixed (transcriptPath, type-only match, empty-text first-match) — 10-case regression test added
+- #2250 — health endpoint uptime returns seconds (consumed F3)
+- #2222 — `CLAUDE_CODE_PATH` desktop-app silent fail: rejects `Claude.exe` paths, falls back to real CLI binary
+
+### Tests / CI
+
+- 1454 pass / 77 fail — matches main baseline, zero net regressions
+- All CI green: build, CodeRabbit (17 rounds resolved), Greptile (clean)
+
+### Out of scope (deferred)
+
+#2213 dual-queue avalanche, #2256 unbounded transcript retention, #2217 observation chunking, #2202 codex compression provider, #2249 Codex hook lifecycle migration, #2218 installer cache cleanup, #2167 parallel-agent throughput, #2191 Kiro IDE, #2212 Windows PTY, #2166 stable/beta channels.
+
+---
+
+**Full diff:** d384d3c5 → a3b161f8
+
+## [12.5.1] - 2026-05-03
+
+## Fixed
+
+- **Install failure on Node 25+** — `bun install` no longer fails when trying to compile the unused `tree-sitter` runtime against Node 25's V8 headers (which require C++20). Added `trustedDependencies: ["tree-sitter-cli"]` to the plugin manifest so bun runs only the CLI's prebuilt-binary download script and skips all other lifecycle scripts — including the failing native compile and the unused `.node` bindings of all 24+ grammar packages. claude-mem only ever shells out to the prebuilt `tree-sitter-cli` Rust binary; the runtime native module was never imported. (#2278)
+
+## Internal
+
+- Sync the OpenClaw plugin manifest version (10.4.1 → 12.5.1) so it tracks with the rest of the package going forward; the version-bump skill already lists it but past releases skipped it.
+
+## [12.5.0] - 2026-05-02
+
+## Highlights
+
+**Observation pipeline cleanup — kill the per-message retry counter.** The AI's parseable response is the only success signal; any other response (unparseable, empty, transport error) is a no-op. No more silent data loss after 3 retries.
+
+## What changed
+
+- **Parser:** collapsed to binary `{ valid: true, observations, summary } | { valid: false }`. No more `kind`/`skipped` enum dispatch in callers.
+- **ResponseProcessor:** two branches only — parseable → store + clear pending → broadcast; not parseable → reset claimed-but-unprocessed messages to pending. Removed per-message FIFO popping and the summarize-special-case best-effort confirm.
+- **PendingMessageStore:** 226 → 165 lines. Removed `markFailed` (the retry counter that silently dropped data after 3 attempts), `transitionMessagesTo`, `confirmProcessed`, `clearFailedOlderThan`, plus four other dead methods.
+- **Provider cleanup:** removed `processingMessageIds` tracking from Claude, Gemini, OpenRouter providers. The session-scoped clear handles the success path; no per-message in-flight tracking needed.
+- **GeneratorExitHandler:** drain-in-flight loop deleted; hard-stop / restart-guard paths now just clear pending for the session.
+- **Schema migration v31 + v32:** dropped four dead columns from `pending_messages` — `retry_count`, `failed_at_epoch`, `completed_at_epoch`, `worker_pid`. Status enum reduced to `'pending' | 'processing'` (the unreachable `'processed'` and `'failed'` are gone).
+
+## Bug fixes / polish
+
+- **`SessionQueueProcessor`:** removed two arbitrary 1-second recovery sleeps after error in `claimNextMessage`/`waitForMessage`; let the iterator end cleanly so `GeneratorExitHandler` can restart it.
+- **`Server.ts` + `SettingsRoutes.ts`:** unified four magic-number `setTimeout` exit-flush patterns (100ms × 2, 1000ms × 2) into one `flushResponseThen` helper using `res.on('finish', ...)`.
+- **PR review feedback (21+ threads):** install.ts argument fixes, settings cache TTL, Dockerfile login-banner sourcing, docs port-model + Node version updates, regex whitespace fix, Date.UTC for year-mismatch test, sync-marketplace port range guard, banner inflate fail-open, version-bump arg validation.
+
+## Net diff
+
+`-181 lines` (worker-service.cjs unaffected; total source lines down).
+
+## Migration
+
+Existing databases auto-migrate on worker startup (schema v31 + v32 drop the dead columns). No user action needed.
+
+## [12.4.9] - 2026-04-30
+
+Patches in 7 critical fixes from PR #2219 (integration/critical-fixes-april):
+
+- #2211 build/bundle drift — remove stale macOS binary + regen artifacts (closes #2158, #2200, #2154)
+- #2204 strip privacy tags before summarization (closes #2149)
+- #2205 preserve relevance order in semantic search (closes #2153)
+- #2208 restore Windows spawn (PR #751 re-apply) + Windows CI
+- #2209 Codex transcript ingestion + queue self-deadlock on Windows (closes #2192)
+- #2206 isolate SDK boundary — close 6 issues at 3 call sites
+- #2210 standalone batch — npm peer deps, marketplace self-heal, cache prune
+
+## [12.4.8] - 2026-04-28
+
+## Bug Fixes
+
+- **timeline tool:** Coerce stringified numeric anchors (e.g. `"123"`) into the observation-ID dispatch path so they no longer fall through to ISO-timestamp parsing and return wrong-epoch windows. The HTTP layer always sends anchor as a string, so this fixes anchor lookups via MCP and HTTP across the board. (#2176)
+
+## Tests
+
+- Added a 7-case regression suite covering JS-number anchors, stringified-number anchors (incl. whitespace-padded), session-ID anchors (`S<n>`), ISO-timestamp anchors, garbage anchors, and explicit numeric-not-found behavior. The suite runs against a real in-memory SQLite `SessionStore` to exercise the full dispatch path.
+
+## Refactors
+
+- Extracted `parseNumericAnchor` helper in `SearchManager` to centralize anchor coercion across timeline handlers.
+
+## [12.4.7] - 2026-04-26
+
+## Cynical deletion + review fixes
+
+This release wraps up the cynical-deletion sweep (PR #2141) — closing 27 issues by removing two anti-patterns that were breeding bugs:
+
+- **Defenders** (orphan cleanup, duplicate liveness probes, restart-port-steal logic) replaced with fail-fast or single-source paths.
+- **Tolerators** (silent JSON drops, drifted SSE/SQL filters, passthrough Zod schemas) replaced with strict boundaries.
+
+### Highlights
+- Multi-account isolation via `CLAUDE_MEM_DATA_DIR` + per-UID worker port (`37700 + uid % 100`), with `CLAUDE_MEM_WORKER_PORT` override (#2101)
+- New `CLAUDE_MEM_INTERNAL=1` trust boundary replaces cwd-based observer-session detection
+- Shared `shouldEmitProjectRow` predicate keeps SSE broadcast and pagination filters in sync
+- Pinned `chroma-mcp` to 0.2.6 for reproducible installs
+- Install/uninstall: shared `shutdown-helper` releases file locks before overwrite/delete (#2106)
+- Migration 30: `observations.metadata` column added (#2116)
+- Proxy env vars stripped from spawned subprocesses to prevent user proxy config leaking into AI API calls
+
+### Review-comment fixes (post-PR)
+- `worker-service` restart now exits 1 with error if `spawnDaemon` fails (Greptile P1)
+- `shutdown-helper` distinguishes `AbortError` (slow worker) from connection-refused (gone) (Greptile P2)
+- `hooks.json` `$HOME` cache lookup quoted to support paths with spaces
+- `timeline-report` SKILL works on Windows (no `process.getuid()` requirement)
+- `opencode-plugin` validates `CLAUDE_MEM_WORKER_PORT` before use
+- `uninstall` only strips alias lines, not function declarations
+- `MemoryRoutes` trims whitespace-only `project` before precedence resolution
+- Migration 21 preserves `metadata` column when rebuilding observations table
+
+### Closes
+#2087, #2089, #2094, #2099, #2101, #2103, #2106, #2116, #2139, #2140, and 17 more (see PR #2141).
+
+## [12.4.5] - 2026-04-26
+
+## Bug Fixes
+
+- **Fix observation persistence on fresh installs (#2139)**: `SessionStore` was missing migration 28's column additions, so freshly created `pending_messages` tables had no `tool_use_id` or `worker_pid` columns. Every queue claim and observation insert failed silently with "no such column" errors and nothing reached memory. Added `addPendingMessagesToolUseIdAndWorkerPidColumns` mirror in `SessionStore.ts` (matches the existing `addObservationSubagentColumns` / `addObservationsUniqueContentHashIndex` mirror pattern). Already-broken DBs at "v29 with no v28 columns" self-heal on next worker boot via column-existence guards. Dedup DELETE + UNIQUE index creation are now wrapped in a transaction matching the v29 mirror precedent.
+
+Thanks to @drdah123 for the precise diagnosis and reproduction in the issue report.
+
+## [12.4.4] - 2026-04-26
+
+## Bug fix: stop draining the observation queue on /clear
+
+When users typed `/clear` in Claude Code (or logged out, exited, or hit `prompt_input_exit`), every still-pending observation in the worker queue was being marked `abandoned` and never processed. The same shim was wired across Claude Code, Gemini CLI, the transcripts processor, OpenCode plugin, and OpenClaw — five surfaces, all draining the queue on what should be benign session-end signals.
+
+This release removes the `SessionEnd → session-complete` hook entirely. The worker self-completes via its SDK-agent generator's finally-block, so no external completion call is needed. Pending observations now finish processing naturally instead of being abandoned.
+
+Explicit user-initiated session deletion (via the viewer UI's `DELETE /api/sessions/:id`) still drains the queue — that's the only path that should.
+
+### What changed
+
+- Removed `SessionEnd` hook block from `plugin/hooks/hooks.json`
+- Removed `POST /api/sessions/complete` route + Zod schema in `SessionRoutes.ts`
+- Deleted `src/cli/handlers/session-complete.ts` and its registry entry
+- Removed the call from `src/services/transcripts/processor.ts`
+- Removed the call from the OpenCode plugin's `session.deleted` handler
+- Removed the Gemini CLI installer's `SessionEnd → session-complete` mapping
+- Removed `scheduleSessionComplete`, `pendingCompletionTimers`, and `completionDelayMs` from OpenClaw
+
+### Background
+
+This bug had been quietly draining queues since **November 7, 2025** (~6 months). The wiring crept in as a "cleanup hook stops the spinner" side effect (#4416), got rationalized as canonical architecture (#6682, #14793), and survived multiple refactors that preserved it instead of questioning it. Full timeline in PR #2136.
+
+## [12.4.3] - 2026-04-25
+
+One-time pollution cleanup migration plus the v12.4.1 / v12.4.2 ship-blocker fixes folded into a single release.
+
+## Headline
+
+**One-shot DB cleanup migration** (`CleanupV12_4_3.ts`) — runs once per data directory at worker startup, marker-file gated, opt-out via `CLAUDE_MEM_SKIP_CLEANUP_V12_4_3=1`. Cleans:
+- `observer-sessions` rows that polluted user-facing search/timeline before the observer-sessions filter shipped (cascades to `user_prompts`, `observations`, `session_summaries`).
+- Stuck `pending_messages` chains (≥10 rows per session in `failed`/`processing`) left over from the pre-v12.4.2 context-overflow loop.
+- `~/.claude-mem/chroma/` and `chroma-sync-state.json` so `backfillAllProjects` rebuilds vectors from the cleaned SQLite.
+
+Backups before any delete: `VACUUM INTO` first, with a `copyFileSync` fallback that also mirrors `-wal` / `-shm` sidecars so a WAL-mode restore is complete. Pre-flight `statfsSync` disk check before backup. The marker is only written after SQLite purges succeed; Chroma-wipe failures record the error on the marker rather than re-running the backup on every boot.
+
+- **Context-overflow loop fix** (`SDKAgent.ts`): both overflow detection paths (`'prompt is too long'` / `'Prompt is too long'`) now clear `memorySessionId` and force a fresh session via the new `resetSessionForFreshStart` helper before aborting/throwing. Stops the infinite retry seen in pre-v12.4.2 logs.
+- **`<task-notification>` storage leak** (`tag-stripping.ts` + `session-init.ts` + `SessionRoutes.ts`): dual-layer filter at the hook and at the worker HTTP boundary. `isInternalProtocolPayload` uses a tempered greedy body with negative lookahead so adjacent and surrounded protocol tags can't span across user text. 256 KB size guard before the regex prevents ReDoS on malformed payloads.
+
+## v12.4.1 trivial fixes
+
+- `mcpServers: {}` on `SDKAgent` and `KnowledgeAgent` spawns prevents host MCP server inheritance.
+- `McpIntegrations.ts`: `.agent` → `.agents` path correction.
+- `hooks.json`: `file-context` timeout `2000` → `60` (was 33 minutes); explicit `shell: bash` on hooks that use bash-only syntax.
+
+## Cleanup-migration counts (sample run)
+
+11 sessions + 3 cascade rows + 141 pending_messages purged in 1.1s; 277 MB pre-cleanup backup written.
+
+## Tests
+
+New: `tests/infrastructure/cleanup-v12_4_3.test.ts` — real on-disk SQLite under a tmpdir, exercises the happy path, idempotency, opt-out env var, no-DB marker, threshold-boundary preservation. Writing these tests caught a real counting bug (bun:sqlite `result.changes` inflates with FTS triggers) and the regex false positive (greedy `[\s\S]*` spanning two protocol blocks).
+
+## Notes
+
+- The migration is intentionally NOT atomic across the two transactions: if `runStuckPendingPurge` fails after `runObserverSessionsPurge` commits, the observer rows stay deleted and the cleanup retries on next boot. Both purges are idempotent.
+- A user low on disk at first post-upgrade boot will retry on the next boot with adequate space (the marker is not written on disk-skip).
+
+## [12.4.2] - 2026-04-25
+
+## Two ship-blockers from yesterday's triage + 5 trivial fixes
+
+### Worker reliability
+- **Context overflow no longer loops forever.** When the Claude SDK throws `Prompt is too long`, `SDKAgent` now clears `session.memorySessionId` and sets `session.forceInit = true` before throwing — so the immediately-following crash-recovery spawn starts a fresh SDK session instead of resuming the same overflowed context. In the wild this had stranded 68+ pending messages on a single poisoned session before the windowed RestartGuard finally abandoned the queue.
+- **`<task-notification>` payloads no longer pollute `user_prompts`.** Claude Code's autonomous protocol blocks (emitted on background `Agent` completion) were being captured as if they were user prompts — 471 such rows in one local DB. New `isInternalProtocolPayload()` predicate in `src/utils/tag-stripping.ts` blocks them at both the hook layer (`session-init.ts`) and the worker boundary (`SessionRoutes.ts`). Conservative deny-list — does NOT touch `<command-name>` / `<command-message>` which wrap real user slash-commands.
+
+### Triage cleanup (from yesterday's open-issue review)
+- **#2092**: `worker-service.cjs` build banner now CJS-safe (no `import.meta.url`); `node -c` passes for the first time in several releases.
+- **#2100**: PreToolUse Read hook timeout reduced from `2000` (s, plainly a typo) to `60`.
+- **#2131**: `"shell": "bash"` added to every hook in `plugin/hooks/hooks.json` so Claude Code on Windows routes through Git Bash instead of cmd.exe.
+- **#2132**: Antigravity context file path corrected from `.agent/rules` to `.agents/rules`.
+- **#2088**: Worker SDK `query()` calls now pass `mcpServers: {}` to suppress inheritance of the user's global MCP servers (Serena, etc.) into observer/knowledge sessions.
+
+### Notes
+- Cleanup of polluted rows is included in the worker — fresh installs are clean. To clean an existing DB: `sqlite3 ~/.claude-mem/claude-mem.db "DELETE FROM user_prompts WHERE prompt_text LIKE '<task-notification>%';"` (the AFTER-DELETE trigger handles FTS).
+- The 5 triage fixes were authored from a multi-agent review of 38 open issues against the v12.3.0–v12.4.1 cleanup arc.
+
+## [12.4.1] - 2026-04-25
+
+## perf(chroma): Cache backfill watermarks to skip per-restart Chroma scans
+
+Worker restarts were re-scanning Chroma's full metadata for every project on every boot to determine which sqlite ids were already embedded. With ~253 projects and ~92k embeddings, this pegged `chroma-mcp` at 100–422% CPU on each spawn.
+
+### What changed
+- New `~/.claude-mem/chroma-sync-state.json` watermark cache — per-project highest synced sqlite_id for observations, summaries, and prompts.
+- Backfill SQL changed from `id NOT IN (huge list)` to `id > watermark`.
+- Live `syncObservation` / `syncSummary` / `syncUserPrompt` bump the watermark on success.
+- One-time bootstrap derives initial watermarks from a single Chroma scan if the state file is missing — after that, Chroma metadata is never scanned again on startup.
+- Watermark advances per batch, so partial-failure runs resume cleanly.
+
+### Result
+- Chroma CPU on worker restart: **422% → 0%**.
+- State file size for 253 projects: **~3.7 KB**.
+- Backfill startup time: **seconds → near-instant** after bootstrap.
+
+## [12.3.9] - 2026-04-22
+
+## Highlights
+
+### 🔐 Security observation types + Telegram notifier
+- New observation types: `security_alert` 🚨 (high-priority, triggers notifications) and `security_note` 🔐 (low-priority).
+- Fire-and-forget Telegram notifier — MarkdownV2 formatting, per-observation error isolation, no token logging.
+- Five env vars control behavior. `CLAUDE_MEM_TELEGRAM_ENABLED` master toggle defaults on (no-op without bot token + chat ID).
+
+### ⚡ Stop hook: fire-and-forget summarize
+- Eliminated the ~110s terminal block when a session ended. Summarize handler now enqueues and returns immediately.
+- Server-side `SessionCompletionHandler` finalizes off the hook's critical path (generator + HTTP fallback), with singleton sharing across the worker.
+
+### 🐛 Hooks: worker-port precedence + Windows (#2086 / PR #2084)
+- Hooks now resolve endpoint with the same precedence as the worker: env (`CLAUDE_MEM_WORKER_PORT`, `CLAUDE_MEM_WORKER_HOST`) > settings.json > defaults.
+- Looser sed regex handles both quoted and unquoted JSON port values.
+- Windows fallback to 37777 when per-uid formula doesn't apply.
+
+### 🔧 Bug fixes (reviewer rounds on PR #2084)
+- Don't remove in-memory session after a failed finalize; preserve crash-recovery state at 3 sites.
+- Eliminate double-broadcast of `session_completed` on fallback path.
+- Sync `DatabaseManager.getSessionById` return type.
+- `TelegramNotifier` now respects `settings.json` (not just env).
+- Hardcoded 🚨 emoji replaced with per-type mapping.
+
+### 📝 Docs
+- `version-bump` skill now covers `npm publish` + all 6 manifest paths so `npx claude-mem@<version>` always resolves. Adds `git grep` pre-flight for new manifests.
+
+### ⚙️ Chores
+-
+
+## [12.3.8] - 2026-04-21
+
+## 🔧 Fix
+
+**Detect PID reuse in the worker start-guard so containers can restart cleanly.** (#2082)
+
+The `kill(pid, 0)` liveness check false-positived when the worker's PID file outlived its PID namespace — most commonly after `docker stop` / `docker start` with a bind-mounted `~/.claude-mem`. The new worker would boot as the same low PID (often 11) as the old one, `kill(0)` would report "alive," and the worker would refuse to start *against its own prior incarnation*. Symptom: container appeared to start, immediately exited cleanly with no user-visible error, worker never came up.
+
+### What changed
+
+- Capture an opaque **process-start identity token** alongside the PID and verify identity, not just liveness:
+  - **Linux**: `/proc/<pid>/stat` field 22 (starttime in jiffies) — cheap, no exec, same signal `pgrep`/`systemd` use.
+  - **macOS / POSIX**: `ps -p <pid> -o lstart=` with `LC_ALL=C` pinned so the emitted timestamp is locale-independent across environments.
+  - **Windows**: unchanged — falls back to liveness-only. The PID-reuse scenario doesn't affect Windows deployments the way containers do.
+- `verifyPidFileOwnership` emits a DEBUG log when liveness passes but the token mismatches, so the "PID reused" case is distinguishable from "process dead" in production logs.
+- PID files written by older versions are token-less; `verifyPidFileOwnership` falls back to the existing liveness-only behavior for backwards compatibility. **No migration required.**
+
+### Surface
+
+Shared helpers (`PidInfo`, `captureProcessStartToken`, `verifyPidFileOwnership`) live in `src/supervisor/process-registry.ts` and are re-exported from `ProcessManager.ts` to preserve the existing public surface. Both entry points updated: `worker-service.ts` GUARD 1 and `supervisor/index.ts` `validateWorkerPidFile`.
+
+### Tests
+
++14 new tests covering token capture, ownership verification, backwards compatibility for tokenless PID files, and the container-restart regression scenario. Zero regressions.
+
+## [12.3.7] - 2026-04-20
+
+## What's Changed
+
+**Refactor: remove bearer auth and platform_source context filter** (#2081)
+
+- Drop bearer-token auth from the worker API. Worker binds localhost-only and CORS restricts origins to localhost — the token added friction for every internal client (hooks, CLI, viewer, sync script) with no real security benefit for single-user local deployments.
+- Drop the unused `platform_source` query-time filter from the `/api/context/inject` pipeline (ContextBuilder, ObservationCompiler, SearchRoutes, context handler, transcripts processor). The DB column stays — only the WHERE-clause filter and its plumbing are removed.
+- Replace the removed auth with a simple in-memory rate limiter (300 req/min) as a lightweight compensating control. Limiter normalises IPv4-mapped IPv6, emits `Retry-After` on 429, and has a size-guarded prune that never runs on localhost.
+
+## Cleanup
+
+- Deleted `src/shared/auth-token.ts` and all its dependents (`worker-utils.ts` Authorization header, `ViewerRoutes.ts` token injection, CORS `allowedHeaders: ['Authorization']`, `sync-marketplace.cjs` admin restart header).
+- Stopped tracking `.docker-blowout-data/claude-mem.db` and added the directory to `.gitignore`.
+
+## Full Changelog
+https://github.com/thedotmack/claude-mem/compare/v12.3.6...v12.3.7
+
+## [12.3.6] - 2026-04-20
+
+## Viewer fix: drop the rate limiter
+
+v12.3.5 kept the 300 req/min rate limiter from v12.3.3's "security hardening" bundle. That tripped the live viewer within seconds (it polls logs and stats) and served it "Rate limit exceeded" errors.
+
+**Fix**: remove the rate limiter entirely. The worker is localhost-only (enforced via CORS), so there's no abuse surface to protect. Rate-limiting a single-user local process is security theater.
+
+### Still kept from v12.3.3 hardening
+- 5 MB JSON body limit
+- Path traversal protection
+- Localhost-only CORS
+- Everything else from v12.3.5
+
+No upgrade action required.
+
+## [12.3.5] - 2026-04-20
+
+## Restored v12.3.3 fixes minus bearer auth
+
+v12.3.3 shipped 25 bug fixes under "Issue Blowout 2026" but also introduced bearer-token auth that broke SessionStart context injection for everyone. v12.3.4 rolled everything back to v12.3.2 to unblock users.
+
+**v12.3.5 restores all 25 fixes**, with the bearer-auth mechanism surgically removed.
+
+### Kept hardening from v12.3.3
+- 5 MB JSON body limit
+- In-memory rate limiter (300 req/min/IP)
+- Path traversal protection on `watch.context.path`
+- `RestartGuard` (time-windowed restart counter)
+- Idle session eviction on pool slot allocation
+- WAL checkpoint + `journal_size_limit`
+- Periodic `clearFailed()` for pending_messages
+- FTS5 keyword-search fallback when ChromaDB is unavailable
+- `ResponseProcessor` marks non-XML responses as failed (with retry) instead of confirming
+- `/health` reports `activeSessions`
+- Summarize hook wraps `workerHttpRequest` in try/catch (no more blocking exit code 2)
+- UserPromptSubmit session-init waits for worker health on Linux/WSL
+- MCP loopback self-check uses `process.execPath` instead of bare `node`
+- Nounset-safe `TTY_ARGS` in `docker/claude-mem/run.sh`
+
+### Removed from v12.3.3
+- `src/shared/auth-token.ts` (deleted)
+- `requireAuth` middleware and its wiring in `Server.ts`/`Middleware.ts`
+- `Authorization: Bearer` injection in `worker-utils.ts` (hook client), `ViewerRoutes.ts` (browser token injection), viewer `authFetch`, and the OpenCode plugin
+
+### Upgrade notes
+- `~/.claude-mem/worker-auth-token` from a previous 12.3.3 install is harmless and can be deleted.
+- If your Claude Code session kept the 12.3.3 daemon alive, restart Claude Code once so the fresh 12.3.5 daemon takes over.
+
+## [12.3.4] - 2026-04-20
+
+## Rollback of v12.3.3
+
+v12.3.3 (Issue Blowout 2026, PR #2080) broke SessionStart context injection — new sessions received no memory context from claude-mem. This release reverts to the v12.3.2 tree state while the regression is investigated.
+
+### Reverted
+- #2080 — Issue Blowout 2026 (25 bugs across worker, hooks, security, and search)
+
+### Notes
+No functional changes from v12.3.2. A follow-up release will re-land the v12.3.3 fixes individually once the context regression is identified and resolved.
+
+## [12.3.3] - 2026-04-20
+
+## Issue Blowout 2026 — 25 bugs across worker, hooks, security, and search
+
+### Security Hardening
+- Bearer token authentication for all worker API endpoints with auto-generated tokens
+- Path traversal protection on context write paths
+- Per-user worker port derivation (37700 + uid%100) to prevent cross-user data leakage
+- Rate limiting (300 req/min/IP) and reduced JSON body limit (50MB → 5MB)
+- Caller headers can no longer override the bearer auth token
+
+### Worker Stability
+- Time-windowed RestartGuard replaces flat counter — prevents stranding pending messages on long sessions
+- Idle session eviction prevents pool slot deadlock when all slots are full
+- MCP loopback self-check uses process.execPath instead of bare 'node'
+- Age-scoped failed message purge (1h retention) instead of clearing all
+- RestartGuard decay anchored to real successes, not object creation time
+
+### Search & Chroma
+- FTS5 keyword fallback when ChromaDB is unavailable for all search handlers
+- doc_type:'observation' filter on Chroma queries feeding observation hydration
+- Project filtering passed to Chroma queries and SQLite hydration in all endpoints
+- Bounded post-import Chroma sync with concurrency limit of 8
+- FTS5 MATCH input escaped as quoted literal phrases to prevent syntax errors
+- LIKE metacharacters escaped in prompt text search
+- date_desc ordering respected in FTS session search
+
+### Hooks Reliability
+- Summarize hook wrapped in try/catch to prevent exit code 2 on network failures
+- Session-init gated on health check success — no longer runs when worker unreachable
+- Health-check wait loop added to UserPromptSubmit for Linux/WSL startup race
+
+### Database & Performance
+- Periodic WAL checkpoint and journal_size_limit to prevent unbounded WAL growth
+- FTS5 availability cached at construction time (no DDL probe per query)
+- _fts5Available downgraded when FTS table creation fails
+
+### Viewer UI
+- response.ok check added to settings save and initial load flows
+- Auth failure handling in saveSettings
+
 ## [12.3.2] - 2026-04-20
 
 ## Bug Fixes

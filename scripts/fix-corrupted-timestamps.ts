@@ -1,36 +1,18 @@
 #!/usr/bin/env bun
 
-/**
- * Fix Corrupted Observation Timestamps
- *
- * This script repairs observations that were created during the orphan queue processing
- * on Dec 24, 2025 between 19:45-20:31. These observations got Dec 24 timestamps instead
- * of their original timestamps from Dec 17-20.
- */
-
 import Database from 'bun:sqlite';
 import { resolve } from 'path';
 
 const DB_PATH = resolve(process.env.HOME!, '.claude-mem/claude-mem.db');
 
-// Bad window: Dec 24 19:45-20:31 (timestamps in milliseconds, not microseconds)
-// Using actual observation epoch format (microseconds since epoch)
-const BAD_WINDOW_START = 1766623500000; // Dec 24 19:45 PST
-const BAD_WINDOW_END = 1766626260000;   // Dec 24 20:31 PST
+const BAD_WINDOW_START = 1766623500000; 
+const BAD_WINDOW_END = 1766626260000;   
 
 interface AffectedObservation {
   id: number;
   memory_session_id: string;
   created_at_epoch: number;
   title: string;
-}
-
-interface ProcessedMessage {
-  id: number;
-  session_db_id: number;
-  tool_name: string;
-  created_at_epoch: number;
-  completed_at_epoch: number;
 }
 
 interface SessionMapping {
@@ -72,7 +54,6 @@ function main() {
   const db = new Database(DB_PATH);
 
   try {
-    // Step 1: Find affected observations
     console.log('Step 1: Finding observations created during bad window...');
     const affectedObs = db.query<AffectedObservation, []>(`
       SELECT id, memory_session_id, created_at_epoch, title
@@ -89,21 +70,7 @@ function main() {
       return;
     }
 
-    // Step 2: Find processed pending_messages from bad window
-    console.log('Step 2: Finding pending messages processed during bad window...');
-    const processedMessages = db.query<ProcessedMessage, []>(`
-      SELECT id, session_db_id, tool_name, created_at_epoch, completed_at_epoch
-      FROM pending_messages
-      WHERE status = 'processed'
-        AND completed_at_epoch >= ${BAD_WINDOW_START}
-        AND completed_at_epoch <= ${BAD_WINDOW_END}
-      ORDER BY completed_at_epoch
-    `).all();
-
-    console.log(`Found ${processedMessages.length} processed messages\n`);
-
-    // Step 3: Match observations to their session start times (simpler approach)
-    console.log('Step 3: Matching observations to session start times...');
+    console.log('Step 2: Matching observations to session start times...');
     const fixes: TimestampFix[] = [];
 
     interface ObsWithSession {
@@ -136,13 +103,12 @@ function main() {
         wrong_timestamp: row.obs_created,
         correct_timestamp: row.session_started,
         session_db_id: 0, // Not needed for this approach
-        pending_message_id: 0 // Not needed for this approach
+        pending_message_id: 0 
       });
     }
 
     console.log(`Identified ${fixes.length} observations to fix\n`);
 
-    // Step 5: Display what will be fixed
     console.log('═══════════════════════════════════════════════════════════════════════');
     console.log('PROPOSED FIXES:');
     console.log('═══════════════════════════════════════════════════════════════════════\n');
@@ -155,7 +121,6 @@ function main() {
       console.log(`  📅 Off by ${daysDiff} days\n`);
     }
 
-    // Step 6: Ask for confirmation
     console.log('═══════════════════════════════════════════════════════════════════════');
     console.log(`Ready to fix ${fixes.length} observations.`);
 

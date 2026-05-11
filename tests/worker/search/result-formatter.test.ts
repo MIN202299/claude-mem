@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
-// Mock the ModeManager before imports
 mock.module('../../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
     getInstance: () => ({
@@ -44,7 +43,6 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 import { ResultFormatter } from '../../../src/services/worker/search/ResultFormatter.js';
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult, SearchResults } from '../../../src/services/worker/search/types.js';
 
-// Mock data
 const mockObservation: ObservationSearchResult = {
   id: 1,
   memory_session_id: 'session-123',
@@ -111,7 +109,7 @@ describe('ResultFormatter', () => {
       expect(formatted).toContain('test query');
       expect(formatted).toContain('1 result');
       expect(formatted).toContain('1 obs');
-      expect(formatted).toContain('#1'); // ID
+      expect(formatted).toContain('#1'); 
       expect(formatted).toContain('Test Decision Title');
     });
 
@@ -125,7 +123,7 @@ describe('ResultFormatter', () => {
       const formatted = formatter.formatSearchResults(results, 'session query');
 
       expect(formatted).toContain('1 session');
-      expect(formatted).toContain('#S1'); // Session ID format
+      expect(formatted).toContain('#S1'); 
       expect(formatted).toContain('Implement feature X');
     });
 
@@ -139,7 +137,7 @@ describe('ResultFormatter', () => {
       const formatted = formatter.formatSearchResults(results, 'prompt query');
 
       expect(formatted).toContain('1 prompt');
-      expect(formatted).toContain('#P1'); // Prompt ID format
+      expect(formatted).toContain('#P1'); 
       expect(formatted).toContain('Can you help me implement');
     });
 
@@ -207,8 +205,35 @@ describe('ResultFormatter', () => {
 
       const formatted = formatter.formatSearchResults(results, 'test', true);
 
-      expect(formatted).toContain('Vector search failed');
-      expect(formatted).toContain('semantic search unavailable');
+      expect(formatted).toContain('Semantic search failed');
+      expect(formatted).toContain('Falling back to keyword search');
+      expect(formatted).not.toContain('Install uv');
+    });
+  });
+
+  describe('formatChromaFailureMessage', () => {
+    it('formats connection-error reasons with offline messaging', () => {
+      const message = ResultFormatter.formatChromaFailureMessage({
+        message: 'subprocess closed',
+        isConnectionError: true,
+      });
+
+      expect(message).toContain('Semantic search is offline');
+      expect(message).toContain('Chroma MCP unreachable: subprocess closed');
+      expect(message).toContain('Falling back to keyword search');
+      expect(message).not.toContain('Install uv');
+    });
+
+    it('formats generic failure reasons with diagnostic pointer', () => {
+      const message = ResultFormatter.formatChromaFailureMessage({
+        message: 'something went wrong',
+        isConnectionError: false,
+      });
+
+      expect(message).toContain('Semantic search failed: something went wrong');
+      expect(message).toContain('Falling back to keyword search');
+      expect(message).toContain('CHROMA_SYNC');
+      expect(message).not.toContain('Install uv');
     });
   });
 
@@ -278,16 +303,13 @@ describe('ResultFormatter', () => {
 
       expect(result.row).toContain('#1');
       expect(result.row).toContain('Test Decision Title');
-      expect(result.row).toContain('~'); // Token estimate
+      expect(result.row).toContain('~'); 
     });
 
     it('should use quote mark for repeated time', () => {
-      // First get the actual time format for this observation
       const firstResult = formatter.formatObservationSearchRow(mockObservation, '');
-      // Now pass that same time as lastTime
       const result = formatter.formatObservationSearchRow(mockObservation, firstResult.time);
 
-      // When time matches lastTime, the row should show quote mark
       expect(result.row).toContain('"');
       expect(result.time).toBe(firstResult.time);
     });
@@ -341,7 +363,6 @@ describe('ResultFormatter', () => {
       const row = formatter.formatObservationIndex(mockObservation, 0);
 
       expect(row).toContain('#1');
-      // Should have more columns than search row
       expect(row.split('|').length).toBeGreaterThan(5);
     });
 

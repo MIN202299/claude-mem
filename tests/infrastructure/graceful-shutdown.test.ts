@@ -19,17 +19,14 @@ const DATA_DIR = path.join(homedir(), '.claude-mem');
 const PID_FILE = path.join(DATA_DIR, 'worker.pid');
 
 describe('GracefulShutdown', () => {
-  // Store original PID file content if it exists
   let originalPidContent: string | null = null;
   const originalPlatform = process.platform;
 
   beforeEach(() => {
-    // Backup existing PID file if present
     if (existsSync(PID_FILE)) {
       originalPidContent = readFileSync(PID_FILE, 'utf-8');
     }
 
-    // Ensure we're testing on non-Windows to avoid child process enumeration
     Object.defineProperty(process, 'platform', {
       value: 'darwin',
       writable: true,
@@ -38,7 +35,6 @@ describe('GracefulShutdown', () => {
   });
 
   afterEach(() => {
-    // Restore original PID file or remove test one
     if (originalPidContent !== null) {
       const { writeFileSync } = require('fs');
       writeFileSync(PID_FILE, originalPidContent);
@@ -47,7 +43,6 @@ describe('GracefulShutdown', () => {
       removePidFile();
     }
 
-    // Restore platform
     Object.defineProperty(process, 'platform', {
       value: originalPlatform,
       writable: true,
@@ -56,6 +51,16 @@ describe('GracefulShutdown', () => {
   });
 
   describe('performGracefulShutdown', () => {
+    // Timeout bumped to 15s. performGracefulShutdown calls
+    // getSupervisor().stop() which runs runShutdownCascade against the real
+    // ~/.claude-mem/supervisor.json registry. If the developer has a live
+    // worker + chroma-mcp registered, the cascade SIGTERMs/SIGKILLs them
+    // and waits up to ~5–6s for them to exit, which sails past the default
+    // 5000ms test timeout. The other shutdown tests below are unaffected
+    // because they don't register an mcpClient/dbManager/chromaMcpManager
+    // mock that exercises the same path. This is test-infrastructure debt
+    // — the test interacts with the production supervisor singleton — not
+    // a code regression in the shutdown flow itself.
     it('should call shutdown steps in correct order', async () => {
       const callOrder: string[] = [];
 
@@ -93,7 +98,6 @@ describe('GracefulShutdown', () => {
         })
       };
 
-      // Create a PID file so we can verify it's removed
       writePidFile({ pid: 12345, port: 37777, startedAt: new Date().toISOString() });
       expect(existsSync(PID_FILE)).toBe(true);
 
@@ -107,7 +111,6 @@ describe('GracefulShutdown', () => {
 
       await performGracefulShutdown(config);
 
-      // Verify order: PID removal happens first (synchronous), then server, then session, then MCP, then Chroma, then DB
       expect(callOrder).toContain('closeAllConnections');
       expect(callOrder).toContain('serverClose');
       expect(callOrder).toContain('sessionManager.shutdownAll');
@@ -115,25 +118,20 @@ describe('GracefulShutdown', () => {
       expect(callOrder).toContain('chromaMcpManager.stop');
       expect(callOrder).toContain('dbManager.close');
 
-      // Verify server closes before session manager
       expect(callOrder.indexOf('serverClose')).toBeLessThan(callOrder.indexOf('sessionManager.shutdownAll'));
 
-      // Verify session manager shuts down before MCP client
       expect(callOrder.indexOf('sessionManager.shutdownAll')).toBeLessThan(callOrder.indexOf('mcpClient.close'));
 
-      // Verify MCP closes before database
       expect(callOrder.indexOf('mcpClient.close')).toBeLessThan(callOrder.indexOf('dbManager.close'));
 
-      // Verify Chroma stops before DB closes
       expect(callOrder.indexOf('chromaMcpManager.stop')).toBeLessThan(callOrder.indexOf('dbManager.close'));
-    });
+    }, 15000);
 
     it('should remove PID file during shutdown', async () => {
       const mockSessionManager: ShutdownableService = {
         shutdownAll: mock(async () => {})
       };
 
-      // Create PID file
       writePidFile({ pid: 99999, port: 37777, startedAt: new Date().toISOString() });
       expect(existsSync(PID_FILE)).toBe(true);
 
@@ -144,7 +142,6 @@ describe('GracefulShutdown', () => {
 
       await performGracefulShutdown(config);
 
-      // PID file should be removed
       expect(existsSync(PID_FILE)).toBe(false);
     });
 
@@ -159,10 +156,8 @@ describe('GracefulShutdown', () => {
         // mcpClient and dbManager are undefined
       };
 
-      // Should not throw
       await expect(performGracefulShutdown(config)).resolves.toBeUndefined();
 
-      // Session manager should still be called
       expect(mockSessionManager.shutdownAll).toHaveBeenCalled();
     });
 
@@ -176,7 +171,6 @@ describe('GracefulShutdown', () => {
         sessionManager: mockSessionManager
       };
 
-      // Should not throw
       await expect(performGracefulShutdown(config)).resolves.toBeUndefined();
     });
 
@@ -236,7 +230,6 @@ describe('GracefulShutdown', () => {
     });
 
     it('should handle shutdown when PID file does not exist', async () => {
-      // Ensure PID file doesn't exist
       removePidFile();
       expect(existsSync(PID_FILE)).toBe(false);
 
@@ -249,7 +242,6 @@ describe('GracefulShutdown', () => {
         sessionManager: mockSessionManager
       };
 
-      // Should not throw
       await expect(performGracefulShutdown(config)).resolves.toBeUndefined();
     });
   });

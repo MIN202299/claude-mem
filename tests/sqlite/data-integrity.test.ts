@@ -1,14 +1,9 @@
-/**
- * Data integrity tests for TRIAGE-03
- * Tests: content-hash deduplication, project name collision, empty project guard, stuck isProcessing
- */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
 import {
   storeObservation,
   computeObservationContentHash,
-  findDuplicateObservation,
 } from '../../src/services/sqlite/observations/store.js';
 import {
   createSDKSession,
@@ -70,7 +65,6 @@ describe('TRIAGE-03: Data Integrity', () => {
     });
 
     it('computeObservationContentHash avoids collision from field boundary ambiguity', () => {
-      // These tuples would collide without a delimiter between fields
       const hash1 = computeObservationContentHash('session-abc', 'debug log', '');
       const hash2 = computeObservationContentHash('session-ab', 'cdebug log', '');
       const hash3 = computeObservationContentHash('session-', 'abcdebug log', '');
@@ -87,20 +81,18 @@ describe('TRIAGE-03: Data Integrity', () => {
       const result1 = storeObservation(db, memId, 'test-project', obs, 1, 0, now);
       const result2 = storeObservation(db, memId, 'test-project', obs, 1, 0, now + 1000);
 
-      // Second call should return the same id as the first (deduped)
       expect(result2.id).toBe(result1.id);
     });
 
-    it('storeObservation allows same content after dedup window expires', () => {
+    it('storeObservation deduplicates identical content regardless of time gap (UNIQUE constraint)', () => {
       const memId = createSessionWithMemoryId(db, 'content-dedup-2', 'mem-dedup-2');
       const obs = createObservationInput({ title: 'Same Title', narrative: 'Same Narrative' });
 
       const now = Date.now();
       const result1 = storeObservation(db, memId, 'test-project', obs, 1, 0, now);
-      // 31 seconds later — outside the 30s window
       const result2 = storeObservation(db, memId, 'test-project', obs, 1, 0, now + 31_000);
 
-      expect(result2.id).not.toBe(result1.id);
+      expect(result2.id).toBe(result1.id);
     });
 
     it('storeObservation allows different content at same time', () => {
@@ -134,12 +126,10 @@ describe('TRIAGE-03: Data Integrity', () => {
 
       const result = storeObservations(db, memId, 'test-project', [obs, obs, obs], null);
 
-      // First is inserted, second and third are deduped to the first
       expect(result.observationIds.length).toBe(3);
       expect(result.observationIds[1]).toBe(result.observationIds[0]);
       expect(result.observationIds[2]).toBe(result.observationIds[0]);
 
-      // Only 1 row in the database
       const count = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
       expect(count.count).toBe(1);
     });
@@ -153,53 +143,12 @@ describe('TRIAGE-03: Data Integrity', () => {
       const result = storeObservation(db, memId, '', obs);
       const row = db.prepare('SELECT project FROM observations WHERE id = ?').get(result.id) as { project: string };
 
-      // Should not be empty — will be derived from cwd
       expect(row.project).toBeTruthy();
       expect(row.project.length).toBeGreaterThan(0);
     });
   });
 
-  describe('Stuck isProcessing flag', () => {
-    it('hasAnyPendingWork resets stuck processing messages older than 5 minutes', () => {
-      // Create a pending_messages table entry that's stuck in 'processing'
-      const sessionId = createSDKSession(db, 'content-stuck', 'stuck-project', 'test');
-
-      // Insert a processing message stuck for 6 minutes
-      const sixMinutesAgo = Date.now() - (6 * 60 * 1000);
-      db.prepare(`
-        INSERT INTO pending_messages (session_db_id, content_session_id, message_type, status, retry_count, created_at_epoch, started_processing_at_epoch)
-        VALUES (?, 'content-stuck', 'observation', 'processing', 0, ?, ?)
-      `).run(sessionId, sixMinutesAgo, sixMinutesAgo);
-
-      const pendingStore = new PendingMessageStore(db);
-
-      // hasAnyPendingWork should reset the stuck message and still return true (it's now pending again)
-      const hasPending = pendingStore.hasAnyPendingWork();
-      expect(hasPending).toBe(true);
-
-      // Verify the message was reset to 'pending'
-      const msg = db.prepare('SELECT status FROM pending_messages WHERE content_session_id = ?').get('content-stuck') as { status: string };
-      expect(msg.status).toBe('pending');
-    });
-
-    it('hasAnyPendingWork does NOT reset recently-started processing messages', () => {
-      const sessionId = createSDKSession(db, 'content-recent', 'recent-project', 'test');
-
-      // Insert a processing message started 1 minute ago (well within 5-minute threshold)
-      const oneMinuteAgo = Date.now() - (1 * 60 * 1000);
-      db.prepare(`
-        INSERT INTO pending_messages (session_db_id, content_session_id, message_type, status, retry_count, created_at_epoch, started_processing_at_epoch)
-        VALUES (?, 'content-recent', 'observation', 'processing', 0, ?, ?)
-      `).run(sessionId, oneMinuteAgo, oneMinuteAgo);
-
-      const pendingStore = new PendingMessageStore(db);
-      const hasPending = pendingStore.hasAnyPendingWork();
-      expect(hasPending).toBe(true);
-
-      // Verify the message is still 'processing' (not reset)
-      const msg = db.prepare('SELECT status FROM pending_messages WHERE content_session_id = ?').get('content-recent') as { status: string };
-      expect(msg.status).toBe('processing');
-    });
+  describe('hasAnyPendingWork', () => {
 
     it('hasAnyPendingWork returns false when no pending or processing messages exist', () => {
       const pendingStore = new PendingMessageStore(db);

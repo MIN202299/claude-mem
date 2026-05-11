@@ -498,10 +498,6 @@
       line-height: 1;
     }
 
-
-
-
-
     .logomark {
       height: 32px;
       width: auto;
@@ -555,42 +551,6 @@
       align-items: center;
       gap: 8px;
       font-size: 13px;
-    }
-
-    .source-tabs {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      flex-wrap: wrap;
-    }
-
-    .source-tab {
-      background: transparent;
-      border: 1px solid var(--color-border-primary);
-      color: var(--color-text-secondary);
-      border-radius: 999px;
-      padding: 6px 12px;
-      font-size: 12px;
-      line-height: 1;
-      font-weight: 600;
-      letter-spacing: 0.01em;
-      cursor: pointer;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      white-space: nowrap;
-    }
-
-    .source-tab:hover {
-      background: var(--color-bg-card-hover);
-      border-color: var(--color-border-focus);
-      color: var(--color-text-primary);
-      transform: translateY(-1px);
-    }
-
-    .source-tab.active {
-      background: linear-gradient(135deg, var(--color-bg-button) 0%, var(--color-accent-primary) 100%);
-      border-color: var(--color-bg-button);
-      color: var(--color-text-button);
-      box-shadow: 0 2px 8px rgba(9, 105, 218, 0.18);
     }
 
     .settings-btn,
@@ -909,7 +869,6 @@
       gap: 10px;
     }
 
-
     .card-subheading {
       display: flex;
       align-items: center;
@@ -1119,11 +1078,8 @@
       color: var(--color-text-tertiary);
     }
 
-
-
     /* Stack single column on narrow screens (removed - no longer using card-files) */
     @media (max-width: 600px) {}
-
 
     /* Project badge styling */
     .card-project {
@@ -1448,6 +1404,208 @@
       color: var(--color-observation-badge-text);
     }
 
+    /* Welcome modal — first-launch + reusable as help via the ? button.
+       Layout strategy: desktop-first, fluid type via clamp(), and squares
+       built with the padding-bottom:100% trick (percentage padding resolves
+       against width, so the box is always W × W regardless of content). */
+    .welcome-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 1100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: clamp(16px, 3vw, 40px);
+      background: rgba(0, 0, 0, 0.15);
+      animation: fadeIn 0.18s ease-out;
+      overflow-y: auto;
+    }
+
+    .welcome-modal {
+      position: relative;
+      width: 100%;
+      max-width: clamp(560px, 70vw, 960px);
+      padding: clamp(28px, 4vw, 52px) clamp(28px, 4.5vw, 60px) clamp(24px, 3vw, 40px);
+      border-radius: clamp(14px, 1.4vw, 20px);
+      background: color-mix(in srgb, var(--color-bg-card) 55%, transparent);
+      border: 1px solid color-mix(in srgb, var(--color-border-primary) 55%, transparent);
+      box-shadow:
+        0 40px 120px rgba(0, 0, 0, 0.6),
+        0 16px 48px rgba(0, 0, 0, 0.35),
+        0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+      animation: slideUp 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+      backdrop-filter: blur(28px) saturate(170%);
+      -webkit-backdrop-filter: blur(28px) saturate(170%);
+    }
+
+    .welcome-modal-dismiss {
+      position: absolute;
+      top: clamp(12px, 1.4vw, 18px);
+      right: clamp(12px, 1.4vw, 18px);
+      width: 36px;
+      height: 36px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--color-bg-card) 70%, transparent);
+      border: 1px solid color-mix(in srgb, var(--color-border-primary) 70%, transparent);
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      padding: 0;
+    }
+
+    .welcome-modal-dismiss:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-border-focus);
+      color: var(--color-text-primary);
+      transform: scale(1.05);
+    }
+
+    .welcome-modal-dismiss:active {
+      transform: scale(0.95);
+    }
+
+    .welcome-modal-header {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: clamp(8px, 0.8vw, 12px);
+      margin-bottom: clamp(20px, 2.4vw, 36px);
+    }
+
+    .welcome-modal-logo {
+      width: clamp(72px, 7.5vw, 104px);
+      height: clamp(72px, 7.5vw, 104px);
+      object-fit: contain;
+      filter: drop-shadow(0 6px 20px rgba(0, 0, 0, 0.18));
+    }
+
+    .welcome-modal-header h2 {
+      margin: clamp(4px, 0.5vw, 8px) 0 0 0;
+      font-size: clamp(22px, 2.4vw, 32px);
+      font-weight: 600;
+      color: var(--color-text-title);
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+    }
+
+    .welcome-modal-header p {
+      margin: 0;
+      font-size: clamp(13px, 1.2vw, 17px);
+      color: var(--color-text-secondary);
+      line-height: 1.5;
+    }
+
+    .welcome-modal-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: clamp(10px, 1.2vw, 18px);
+    }
+
+    /* True-square shell: padding-bottom:100% resolves against parent
+       width, so the box is always W × W. Content is positioned absolutely
+       inside so it cannot push the box taller. */
+    .welcome-modal-feature {
+      position: relative;
+      width: 100%;
+      height: 0;
+      padding-bottom: 100%;
+      border-radius: clamp(10px, 1vw, 14px);
+      background: color-mix(in srgb, var(--color-bg-tertiary) 35%, transparent);
+      border: 1px solid color-mix(in srgb, var(--color-border-primary) 50%, transparent);
+      transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease;
+    }
+
+    .welcome-modal-feature:hover {
+      border-color: var(--color-border-focus);
+      transform: translateY(-2px);
+      background: color-mix(in srgb, var(--color-bg-tertiary) 55%, transparent);
+    }
+
+    .welcome-modal-feature-inner {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      gap: clamp(6px, 0.7vw, 12px);
+      padding: clamp(14px, 1.8vw, 26px);
+    }
+
+    .welcome-modal-feature-art {
+      width: clamp(56px, 6.5vw, 96px);
+      height: clamp(56px, 6.5vw, 96px);
+      color: var(--color-text-tertiary);
+      flex-shrink: 0;
+    }
+
+    .welcome-modal-feature-title {
+      margin: clamp(2px, 0.3vw, 6px) 0 0 0;
+      font-size: clamp(14px, 1.2vw, 17px);
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--color-text-primary);
+      line-height: 1.3;
+    }
+
+    .welcome-modal-feature-desc {
+      margin: 0;
+      font-size: clamp(11px, 0.9vw, 13px);
+      line-height: 1.45;
+      color: var(--color-text-secondary);
+    }
+
+    .welcome-modal-footer {
+      margin-top: clamp(20px, 2.2vw, 32px);
+      padding-top: clamp(14px, 1.4vw, 20px);
+      border-top: 1px solid color-mix(in srgb, var(--color-border-primary) 50%, transparent);
+      text-align: center;
+      font-size: clamp(12px, 1vw, 14px);
+      color: var(--color-text-muted);
+    }
+
+    .welcome-modal-footer a {
+      color: var(--color-accent-primary);
+      text-decoration: none;
+      font-weight: 500;
+    }
+
+    .welcome-modal-footer a:hover {
+      text-decoration: underline;
+    }
+
+    .welcome-modal-footer-sep {
+      margin: 0 8px;
+      opacity: 0.5;
+    }
+
+    /* Below ~600px three squares get too small to read — stack to one
+       column and let each block grow to natural content height. */
+    @media (max-width: 600px) {
+      .welcome-modal {
+        max-width: 100%;
+      }
+
+      .welcome-modal-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .welcome-modal-feature {
+        height: auto;
+        padding-bottom: 0;
+      }
+
+      .welcome-modal-feature-inner {
+        position: static;
+        padding: 22px 18px;
+      }
+    }
+
     .card-content {
       margin-top: 14px;
       margin-bottom: 12px;
@@ -1575,7 +1733,6 @@
       margin: 0 auto;
     }
 
-
     /* Tablet Responsive Styles - 481px to 768px */
     @media (max-width: 768px) and (min-width: 481px) {
       /* Header stays on one line, hide icon links to save space */
@@ -1593,11 +1750,6 @@
 
       .status select {
         max-width: 160px;
-      }
-
-      .source-tab {
-        padding: 6px 10px;
-        font-size: 11px;
       }
 
       /* Hide icon links (docs, github, twitter) on tablet */
@@ -1655,24 +1807,6 @@
 
       .header-main {
         gap: 10px;
-      }
-
-      .source-tabs {
-        width: 100%;
-        flex-wrap: nowrap;
-        overflow-x: auto;
-        padding-bottom: 2px;
-        scrollbar-width: none;
-      }
-
-      .source-tabs::-webkit-scrollbar {
-        display: none;
-      }
-
-      .source-tab {
-        flex-shrink: 0;
-        padding: 5px 10px;
-        font-size: 11px;
       }
 
       .logomark {
@@ -1753,7 +1887,6 @@
       .feed {
         padding: 16px 12px;
       }
-
 
       /* Card adjustments */
       .card {

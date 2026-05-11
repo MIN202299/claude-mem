@@ -1,20 +1,8 @@
-/**
- * DataRoutes Type Coercion Tests
- *
- * Tests that MCP clients sending string-encoded arrays for `ids` and
- * `memorySessionIds` are properly coerced before validation.
- *
- * Mock Justification:
- * - Express req/res mocks: Required because route handlers expect Express objects
- * - DatabaseManager/SessionStore: Avoids database setup; we test coercion logic, not queries
- * - Logger spies: Suppress console output during tests
- */
 
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
 
-// Mock dependencies before importing DataRoutes
 mock.module('../../../../src/shared/paths.js', () => ({
   getPackageRoot: () => '/tmp/test',
 }));
@@ -26,7 +14,6 @@ import { DataRoutes } from '../../../../src/services/worker/http/routes/DataRout
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
-// Helper to create mock req/res
 function createMockReqRes(body: any): { req: Partial<Request>; res: Partial<Response>; jsonSpy: ReturnType<typeof mock>; statusSpy: ReturnType<typeof mock> } {
   const jsonSpy = mock(() => {});
   const statusSpy = mock(() => ({ json: jsonSpy }));
@@ -35,6 +22,31 @@ function createMockReqRes(body: any): { req: Partial<Request>; res: Partial<Resp
     res: { json: jsonSpy, status: statusSpy } as unknown as Partial<Response>,
     jsonSpy,
     statusSpy,
+  };
+}
+
+function captureChain(mockApp: any, targetPath: string): (req: Request, res: Response) => void {
+  let middleware: (req: Request, res: Response, next: () => void) => void;
+  let handler: (req: Request, res: Response) => void;
+  mockApp.post = mock((path: string, ...rest: any[]) => {
+    if (path !== targetPath) return;
+    if (rest.length === 1) {
+      handler = rest[0];
+    } else {
+      middleware = rest[0];
+      handler = rest[1];
+    }
+  });
+  return (req: Request, res: Response): void => {
+    if (!middleware) {
+      handler(req, res);
+      return;
+    }
+    let nextCalled = false;
+    middleware(req, res, () => {
+      nextCalled = true;
+    });
+    if (nextCalled) handler(req, res);
   };
 }
 
@@ -78,17 +90,15 @@ describe('DataRoutes Type Coercion', () => {
   });
 
   describe('handleGetObservationsByIds — ids coercion', () => {
-    // Access the handler via setupRoutes
     let handler: (req: Request, res: Response) => void;
 
     beforeEach(() => {
-      const mockApp = {
+      const mockApp: any = {
         get: mock(() => {}),
-        post: mock((path: string, fn: any) => {
-          if (path === '/api/observations/batch') handler = fn;
-        }),
         delete: mock(() => {}),
+        use: mock(() => {}),
       };
+      handler = captureChain(mockApp, '/api/observations/batch');
       routes.setupRoutes(mockApp as any);
     });
 
@@ -120,7 +130,6 @@ describe('DataRoutes Type Coercion', () => {
       const { req, res, statusSpy } = createMockReqRes({ ids: 'foo,bar' });
       handler(req as Request, res as Response);
 
-      // NaN values should fail the Number.isInteger check
       expect(statusSpy).toHaveBeenCalledWith(400);
     });
 
@@ -143,13 +152,12 @@ describe('DataRoutes Type Coercion', () => {
     let handler: (req: Request, res: Response) => void;
 
     beforeEach(() => {
-      const mockApp = {
+      const mockApp: any = {
         get: mock(() => {}),
-        post: mock((path: string, fn: any) => {
-          if (path === '/api/sdk-sessions/batch') handler = fn;
-        }),
         delete: mock(() => {}),
+        use: mock(() => {}),
       };
+      handler = captureChain(mockApp, '/api/sdk-sessions/batch');
       routes.setupRoutes(mockApp as any);
     });
 
@@ -182,6 +190,25 @@ describe('DataRoutes Type Coercion', () => {
       handler(req as Request, res as Response);
 
       expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['abc', 'def', 'ghi']);
+      expect(jsonSpy).toHaveBeenCalled();
+    });
+
+    it('should accept legacy sdkSessionIds as a compatibility alias', () => {
+      const { req, res, jsonSpy } = createMockReqRes({ sdkSessionIds: ['abc', 'def'] });
+      handler(req as Request, res as Response);
+
+      expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['abc', 'def']);
+      expect(jsonSpy).toHaveBeenCalled();
+    });
+
+    it('should prefer canonical memorySessionIds when both fields are provided', () => {
+      const { req, res, jsonSpy } = createMockReqRes({
+        memorySessionIds: ['canonical'],
+        sdkSessionIds: ['legacy'],
+      });
+      handler(req as Request, res as Response);
+
+      expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['canonical']);
       expect(jsonSpy).toHaveBeenCalled();
     });
 

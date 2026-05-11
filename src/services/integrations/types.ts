@@ -1,6 +1,3 @@
-/**
- * Integration Types - Shared types for IDE integrations
- */
 
 export interface CursorMcpConfig {
   mcpServers: {
@@ -13,7 +10,6 @@ export interface CursorMcpConfig {
 }
 
 export type CursorInstallTarget = 'project' | 'user' | 'enterprise';
-export type Platform = 'windows' | 'unix';
 
 export interface CursorHooksJson {
   version: number;

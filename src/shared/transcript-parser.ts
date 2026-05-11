@@ -2,19 +2,6 @@ import { readFileSync, existsSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../utils/tag-stripping.js';
 
-/**
- * Detect whether a transcript file is in Gemini CLI JSON document format.
- *
- * Gemini CLI 0.37.0 writes a single JSON document with a top-level `messages`
- * array instead of JSONL. Assistant entries use `type: "gemini"` rather than
- * `type: "assistant"`.
- *
- * Example Gemini format:
- *   { "messages": [{ "type": "user", "content": "..." }, { "type": "gemini", "content": "..." }] }
- *
- * Claude Code format (JSONL):
- *   {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
- */
 function isGeminiTranscriptFormat(content: string): { isGemini: true; messages: any[] } | { isGemini: false } {
   try {
     const parsed = JSON.parse(content);
@@ -27,17 +14,6 @@ function isGeminiTranscriptFormat(content: string): { isGemini: true; messages: 
   return { isGemini: false };
 }
 
-/**
- * Extract last message of specified role from transcript file.
- *
- * Supports two transcript formats:
- * - JSONL (Claude Code): one JSON object per line, `type: "assistant"` or `type: "user"`
- * - JSON document (Gemini CLI 0.37.0+): `{ messages: [{ type: "gemini"|"user", content: string }] }`
- *
- * @param transcriptPath Path to transcript file
- * @param role 'user' or 'assistant'
- * @param stripSystemReminders Whether to remove <system-reminder> tags (for assistant)
- */
 export function extractLastMessage(
   transcriptPath: string,
   role: 'user' | 'assistant',
@@ -54,8 +30,6 @@ export function extractLastMessage(
     return '';
   }
 
-  // Gemini CLI 0.37.0 writes a JSON document rather than JSONL.
-  // Detect and handle it before falling through to the JSONL parser.
   const geminiCheck = isGeminiTranscriptFormat(content);
   if (geminiCheck.isGemini) {
     return extractLastMessageFromGeminiTranscript(geminiCheck.messages, role, stripSystemReminders);
@@ -64,16 +38,11 @@ export function extractLastMessage(
   return extractLastMessageFromJsonl(content, role, stripSystemReminders);
 }
 
-/**
- * Extract last message from Gemini CLI JSON document transcript.
- * Maps `type: "gemini"` → assistant role; `type: "user"` → user role.
- */
 function extractLastMessageFromGeminiTranscript(
   messages: any[],
   role: 'user' | 'assistant',
   stripSystemReminders: boolean
 ): string {
-  // "gemini" entries are assistant turns; "user" entries are user turns
   const geminiRole = role === 'assistant' ? 'gemini' : 'user';
 
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -92,53 +61,83 @@ function extractLastMessageFromGeminiTranscript(
 }
 
 /**
- * Extract last message from Claude Code JSONL transcript.
- * Each line is an independent JSON object with `type: "assistant"` or `type: "user"`.
+ * Extract last message from a JSONL transcript.
+ *
+ * Supports two field conventions for the per-line role marker:
+ * - Claude Code:  `{"type":"assistant",...}`
+ * - Cursor:       `{"role":"assistant",...}`
+ *
+ * The most recent assistant turn is often a pure tool_use block with no text
+ * content (especially in Cursor, where the agent's last action before the
+ * user replies is a tool call). We therefore keep scanning backwards until
+ * we find a turn with non-empty text content, instead of returning early on
+ * the first matching role.
  */
-function extractLastMessageFromJsonl(
+export function extractLastMessageFromJsonl(
   content: string,
   role: 'user' | 'assistant',
   stripSystemReminders: boolean
 ): string {
   const lines = content.split('\n');
   let foundMatchingRole = false;
+  let lastEmptyText: string | null = null;
 
   for (let i = lines.length - 1; i >= 0; i--) {
-    const line = JSON.parse(lines[i]);
-    if (line.type === role) {
-      foundMatchingRole = true;
+    const rawLine = lines[i];
+    if (!rawLine) continue;
+    // Tolerate truncated/malformed JSONL lines (crash mid-write, partial flush).
+    // A bad line shouldn't crash the summarization pipeline — skip and move on.
+    let line: any;
+    try {
+      line = JSON.parse(rawLine);
+    } catch {
+      continue;
+    }
+    const lineRole = line.type ?? line.role;
+    if (lineRole !== role) continue;
+    foundMatchingRole = true;
 
-      if (line.message?.content) {
-        let text = '';
-        const msgContent = line.message.content;
+    if (!line.message?.content) continue;
 
-        if (typeof msgContent === 'string') {
-          text = msgContent;
-        } else if (Array.isArray(msgContent)) {
-          text = msgContent
-            .filter((c: any) => c.type === 'text')
-            .map((c: any) => c.text)
-            .join('\n');
-        } else {
-          // Unknown content format - throw error
-          throw new Error(`Unknown message content format in transcript. Type: ${typeof msgContent}`);
-        }
+    let text = '';
+    const msgContent = line.message.content;
+    if (typeof msgContent === 'string') {
+      text = msgContent;
+    } else if (Array.isArray(msgContent)) {
+      text = msgContent
+        .filter(
+          (c: any): c is { type: 'text'; text: string } =>
+            !!c && typeof c === 'object' && c.type === 'text' && typeof c.text === 'string'
+        )
+        .map((c) => c.text)
+        .join('\n');
+    } else {
+      // Unknown content shape (null, number, plain object, etc.) — skip rather
+      // than throw. A single weird line should not crash the entire summary
+      // pipeline; we already tolerate malformed JSONL via the parse-catch
+      // above, and this is the same class of defensive forward compat
+      // (CodeRabbit / Greptile review on PR #2282).
+      continue;
+    }
 
-        if (stripSystemReminders) {
-          text = text.replace(SYSTEM_REMINDER_REGEX, '');
-          text = text.replace(/\n{3,}/g, '\n\n').trim();
-        }
+    if (stripSystemReminders) {
+      text = text.replace(SYSTEM_REMINDER_REGEX, '');
+      text = text.replace(/\n{3,}/g, '\n\n').trim();
+    }
 
-        // Return text even if empty - caller decides if that's an error
-        return text;
-      }
+    if (text && text.trim()) {
+      return text;
+    }
+    // Remember the first (most recent) empty-text turn as a fallback so the
+    // caller can still distinguish "no matching role" from "matching role but
+    // tool-only turns" if every later turn is empty.
+    if (lastEmptyText === null) {
+      lastEmptyText = text;
     }
   }
 
-  // If we searched the whole transcript and didn't find any message of this role
   if (!foundMatchingRole) {
     return '';
   }
-
-  return '';
+  return lastEmptyText ?? '';
 }

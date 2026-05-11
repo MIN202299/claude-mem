@@ -1,13 +1,3 @@
-/**
- * Tests for MigrationRunner idempotency and schema initialization (#979)
- *
- * Mock Justification: NONE (0% mock code)
- * - Uses real SQLite with ':memory:' — tests actual migration SQL
- * - Validates idempotency by running migrations multiple times
- * - Covers the version-conflict scenario from issue #979
- *
- * Value: Prevents regression where old DatabaseManager migrations mask core table creation
- */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { MigrationRunner } from '../../../src/services/sqlite/migrations/runner.js';
@@ -80,6 +70,15 @@ describe('MigrationRunner', () => {
       expect(tables).toContain('session_summaries');
       expect(tables).toContain('user_prompts');
       expect(tables).toContain('pending_messages');
+      expect(tables).toContain('projects');
+      expect(tables).toContain('server_sessions');
+      expect(tables).toContain('agent_events');
+      expect(tables).toContain('memory_items');
+      expect(tables).toContain('memory_sources');
+      expect(tables).toContain('teams');
+      expect(tables).toContain('team_members');
+      expect(tables).toContain('api_keys');
+      expect(tables).toContain('audit_log');
     });
 
     it('should create sdk_sessions with all expected columns', () => {
@@ -121,21 +120,118 @@ describe('MigrationRunner', () => {
       runner.runAllMigrations();
 
       const versions = getSchemaVersions(db);
-      // Core set of expected versions
-      expect(versions).toContain(4);   // initializeSchema
-      expect(versions).toContain(5);   // worker_port
-      expect(versions).toContain(6);   // prompt tracking
-      expect(versions).toContain(7);   // remove unique constraint
-      expect(versions).toContain(8);   // hierarchical fields
-      expect(versions).toContain(9);   // text nullable
-      expect(versions).toContain(10);  // user_prompts
-      expect(versions).toContain(11);  // discovery_tokens
-      expect(versions).toContain(16);  // pending_messages
-      expect(versions).toContain(17);  // rename columns
-      expect(versions).toContain(19);  // repair (noop)
-      expect(versions).toContain(20);  // failed_at_epoch
-      expect(versions).toContain(21);  // ON UPDATE CASCADE
-      expect(versions).toContain(22);  // content_hash
+      expect(versions).toContain(4);   
+      expect(versions).toContain(5);   
+      expect(versions).toContain(6);   
+      expect(versions).toContain(7);   
+      expect(versions).toContain(8);   
+      expect(versions).toContain(9);   
+      expect(versions).toContain(10);  
+      expect(versions).toContain(11);  
+      expect(versions).toContain(16);  
+      expect(versions).toContain(17);  
+      expect(versions).toContain(20);  
+      expect(versions).toContain(21);  
+      expect(versions).toContain(22);  
+      expect(versions).toContain(30);  
+      expect(versions).toContain(33);
+      expect(versions).toContain(34);
+    });
+
+    it('should create server-owned storage tables without changing legacy readability', () => {
+      const runner = new MigrationRunner(db);
+      runner.runAllMigrations();
+
+      const now = new Date().toISOString();
+      const epoch = Date.now();
+
+      db.prepare(`
+        INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run('content-readable', 'memory-readable', 'legacy-project', now, epoch, 'active');
+
+      db.prepare(`
+        INSERT INTO observations (memory_session_id, project, type, title, narrative, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run('memory-readable', 'legacy-project', 'learned', 'Legacy observation', 'Still queryable', now, epoch);
+
+      const observation = db.prepare('SELECT title, narrative FROM observations WHERE memory_session_id = ?').get('memory-readable') as { title: string; narrative: string };
+      expect(observation.title).toBe('Legacy observation');
+      expect(observation.narrative).toBe('Still queryable');
+
+      const memoryItems = db.prepare('SELECT COUNT(*) as count FROM memory_items').get() as { count: number };
+      expect(memoryItems.count).toBe(0);
+    });
+
+    it('should tighten legacy pending_messages status checks from old migration 28 databases', () => {
+      db.run(`
+        CREATE TABLE IF NOT EXISTS schema_versions (
+          id INTEGER PRIMARY KEY,
+          version INTEGER UNIQUE NOT NULL,
+          applied_at TEXT NOT NULL
+        )
+      `);
+
+      db.run(`
+        CREATE TABLE sdk_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          content_session_id TEXT UNIQUE NOT NULL,
+          memory_session_id TEXT UNIQUE,
+          project TEXT NOT NULL,
+          platform_source TEXT NOT NULL DEFAULT 'claude',
+          user_prompt TEXT,
+          started_at TEXT NOT NULL,
+          started_at_epoch INTEGER NOT NULL,
+          completed_at TEXT,
+          completed_at_epoch INTEGER,
+          status TEXT CHECK(status IN ('active', 'completed', 'failed')) NOT NULL DEFAULT 'active'
+        )
+      `);
+
+      db.run(`
+        CREATE TABLE pending_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_db_id INTEGER NOT NULL,
+          content_session_id TEXT NOT NULL,
+          tool_use_id TEXT,
+          message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize')),
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'processed', 'failed')),
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          created_at_epoch INTEGER NOT NULL,
+          completed_at_epoch INTEGER,
+          worker_pid INTEGER
+        )
+      `);
+
+      const now = new Date().toISOString();
+      db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, now);
+      const sessionId = Number(db.prepare(`
+        INSERT INTO sdk_sessions (content_session_id, project, started_at, started_at_epoch)
+        VALUES ('legacy-content', 'legacy-project', ?, ?)
+      `).run(now, Date.now()).lastInsertRowid);
+      db.prepare(`
+        INSERT INTO pending_messages (session_db_id, content_session_id, message_type, status, created_at_epoch)
+        VALUES (?, 'legacy-content', 'observation', 'pending', ?)
+      `).run(sessionId, Date.now());
+      db.prepare(`
+        INSERT INTO pending_messages (session_db_id, content_session_id, message_type, status, created_at_epoch)
+        VALUES (?, 'legacy-content', 'observation', 'failed', ?)
+      `).run(sessionId, Date.now());
+
+      const runner = new MigrationRunner(db);
+      runner.runAllMigrations();
+
+      const pendingRows = db.prepare('SELECT COUNT(*) AS count FROM pending_messages').get() as { count: number };
+      expect(pendingRows.count).toBe(1);
+      const columns = getColumns(db, 'pending_messages').map(column => column.name);
+      expect(columns).not.toContain('retry_count');
+      expect(columns).not.toContain('completed_at_epoch');
+      expect(columns).not.toContain('worker_pid');
+
+      expect(() => db.prepare(`
+        INSERT INTO pending_messages (session_db_id, content_session_id, message_type, status, created_at_epoch)
+        VALUES (?, 'legacy-content', 'observation', 'failed', ?)
+      `).run(sessionId, Date.now())).toThrow();
     });
   });
 
@@ -143,10 +239,8 @@ describe('MigrationRunner', () => {
     it('should succeed when run twice on the same database', () => {
       const runner = new MigrationRunner(db);
 
-      // First run
       runner.runAllMigrations();
 
-      // Second run — must not throw
       expect(() => runner.runAllMigrations()).not.toThrow();
     });
 
@@ -206,8 +300,6 @@ describe('MigrationRunner', () => {
 
   describe('issue #979 — old DatabaseManager version conflict', () => {
     it('should create core tables even when old migration versions 1-7 are in schema_versions', () => {
-      // Simulate the old DatabaseManager having applied its migrations 1-7
-      // (which are completely different operations with the same version numbers)
       db.run(`
         CREATE TABLE IF NOT EXISTS schema_versions (
           id INTEGER PRIMARY KEY,
@@ -221,7 +313,6 @@ describe('MigrationRunner', () => {
         db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(v, now);
       }
 
-      // Now run MigrationRunner — core tables MUST still be created
       const runner = new MigrationRunner(db);
       runner.runAllMigrations();
 
@@ -234,9 +325,6 @@ describe('MigrationRunner', () => {
     });
 
     it('should handle version 5 conflict (old=drop tables, new=add column) correctly', () => {
-      // Old migration 5 drops streaming_sessions/observation_queue
-      // New migration 5 adds worker_port column to sdk_sessions
-      // With old version 5 already recorded, MigrationRunner must still add the column
       db.run(`
         CREATE TABLE IF NOT EXISTS schema_versions (
           id INTEGER PRIMARY KEY,
@@ -249,7 +337,6 @@ describe('MigrationRunner', () => {
       const runner = new MigrationRunner(db);
       runner.runAllMigrations();
 
-      // sdk_sessions should exist and have worker_port (added by later migrations even if v5 is skipped)
       const columns = getColumns(db, 'sdk_sessions');
       const columnNames = columns.map(c => c.name);
       expect(columnNames).toContain('content_session_id');
@@ -261,7 +348,6 @@ describe('MigrationRunner', () => {
       const runner = new MigrationRunner(db);
       runner.runAllMigrations();
 
-      // Simulate a leftover temp table from a crash
       db.run(`
         CREATE TABLE session_summaries_new (
           id INTEGER PRIMARY KEY,
@@ -269,10 +355,8 @@ describe('MigrationRunner', () => {
         )
       `);
 
-      // Remove version 7 so migration tries to re-run
       db.prepare('DELETE FROM schema_versions WHERE version = 7').run();
 
-      // Re-run should handle the leftover table gracefully
       expect(() => runner.runAllMigrations()).not.toThrow();
     });
 
@@ -280,7 +364,6 @@ describe('MigrationRunner', () => {
       const runner = new MigrationRunner(db);
       runner.runAllMigrations();
 
-      // Simulate a leftover temp table from a crash
       db.run(`
         CREATE TABLE observations_new (
           id INTEGER PRIMARY KEY,
@@ -288,10 +371,8 @@ describe('MigrationRunner', () => {
         )
       `);
 
-      // Remove version 9 so migration tries to re-run
       db.prepare('DELETE FROM schema_versions WHERE version = 9').run();
 
-      // Re-run should handle the leftover table gracefully
       expect(() => runner.runAllMigrations()).not.toThrow();
     });
   });
@@ -327,7 +408,6 @@ describe('MigrationRunner', () => {
       const runner = new MigrationRunner(db);
       runner.runAllMigrations();
 
-      // Insert test data
       const now = new Date().toISOString();
       const epoch = Date.now();
 
@@ -346,7 +426,6 @@ describe('MigrationRunner', () => {
         VALUES (?, ?, ?, ?, ?)
       `).run('test-memory-1', 'test-project', 'test request', now, epoch);
 
-      // Run migrations again — data should survive
       runner.runAllMigrations();
 
       const sessions = db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };

@@ -1,14 +1,3 @@
-/**
- * HybridSearchStrategy - Combines metadata filtering with semantic ranking
- *
- * This strategy provides the best of both worlds:
- * 1. SQLite metadata filter (get all IDs matching criteria)
- * 2. Chroma semantic ranking (rank by relevance)
- * 3. Intersection (keep only IDs from step 1, in rank order from step 2)
- * 4. Hydrate from SQLite in semantic rank order
- *
- * Used for: findByConcept, findByFile, findByType with Chroma available
- */
 
 import { BaseSearchStrategy, SearchStrategy } from './SearchStrategy.js';
 import {
@@ -35,7 +24,6 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
   }
 
   canHandle(options: StrategySearchOptions): boolean {
-    // Can handle when we have metadata filters and Chroma is available
     return !!this.chromaSync && (
       !!options.concepts ||
       !!options.files ||
@@ -45,22 +33,15 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
   }
 
   async search(options: StrategySearchOptions): Promise<StrategySearchResult> {
-    // This is the generic hybrid search - specific operations use dedicated methods
     const { query, limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project } = options;
 
     if (!query) {
       return this.emptyResult('hybrid');
     }
 
-    // For generic hybrid search, use the standard Chroma path
-    // More specific operations (findByConcept, etc.) have dedicated methods
     return this.emptyResult('hybrid');
   }
 
-  /**
-   * Find observations by concept with semantic ranking
-   * Pattern: Metadata filter -> Chroma ranking -> Intersection -> Hydrate
-   */
   async findByConcept(
     concept: string,
     options: StrategySearchOptions
@@ -70,7 +51,6 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     logger.debug('SEARCH', 'HybridSearchStrategy: findByConcept', { concept });
 
-    // Step 1: SQLite metadata filter
     const metadataResults = this.sessionSearch.findByConcept(concept, filterOptions);
 
     if (metadataResults.length === 0) {
@@ -79,25 +59,9 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     const ids = metadataResults.map(obs => obs.id);
 
-    try {
-      return await this.rankAndHydrate(concept, ids, limit);
-    } catch (error) {
-      const errorObj = error instanceof Error ? error : new Error(String(error));
-      logger.error('WORKER', 'HybridSearchStrategy: findByConcept failed', {}, errorObj);
-      // Fall back to metadata-only results
-      const results = this.sessionSearch.findByConcept(concept, filterOptions);
-      return {
-        results: { observations: results, sessions: [], prompts: [] },
-        usedChroma: false,
-        fellBack: true,
-        strategy: 'hybrid'
-      };
-    }
+    return await this.rankAndHydrate(concept, ids, limit);
   }
 
-  /**
-   * Find observations by type with semantic ranking
-   */
   async findByType(
     type: string | string[],
     options: StrategySearchOptions
@@ -108,7 +72,6 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     logger.debug('SEARCH', 'HybridSearchStrategy: findByType', { type: typeStr });
 
-    // Step 1: SQLite metadata filter
     const metadataResults = this.sessionSearch.findByType(type as any, filterOptions);
 
     if (metadataResults.length === 0) {
@@ -117,24 +80,9 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     const ids = metadataResults.map(obs => obs.id);
 
-    try {
-      return await this.rankAndHydrate(typeStr, ids, limit);
-    } catch (error) {
-      const errorObj = error instanceof Error ? error : new Error(String(error));
-      logger.error('WORKER', 'HybridSearchStrategy: findByType failed', {}, errorObj);
-      const results = this.sessionSearch.findByType(type as any, filterOptions);
-      return {
-        results: { observations: results, sessions: [], prompts: [] },
-        usedChroma: false,
-        fellBack: true,
-        strategy: 'hybrid'
-      };
-    }
+    return await this.rankAndHydrate(typeStr, ids, limit);
   }
 
-  /**
-   * Find observations and sessions by file path with semantic ranking
-   */
   async findByFile(
     filePath: string,
     options: StrategySearchOptions
@@ -148,7 +96,6 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     logger.debug('SEARCH', 'HybridSearchStrategy: findByFile', { filePath });
 
-    // Step 1: SQLite metadata filter
     const metadataResults = this.sessionSearch.findByFile(filePath, filterOptions);
     const sessions = metadataResults.sessions;
 
@@ -158,18 +105,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     const ids = metadataResults.observations.map(obs => obs.id);
 
-    try {
-      return await this.rankAndHydrateForFile(filePath, ids, limit, sessions);
-    } catch (error) {
-      const errorObj = error instanceof Error ? error : new Error(String(error));
-      logger.error('WORKER', 'HybridSearchStrategy: findByFile failed', {}, errorObj);
-      const results = this.sessionSearch.findByFile(filePath, filterOptions);
-      return {
-        observations: results.observations,
-        sessions: results.sessions,
-        usedChroma: false
-      };
-    }
+    return await this.rankAndHydrateForFile(filePath, ids, limit, sessions);
   }
 
   private async rankAndHydrate(
@@ -191,7 +127,6 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       return {
         results: { observations, sessions: [], prompts: [] },
         usedChroma: true,
-        fellBack: false,
         strategy: 'hybrid'
       };
     }
@@ -222,9 +157,6 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     return { observations: [], sessions, usedChroma: false };
   }
 
-  /**
-   * Intersect metadata IDs with Chroma IDs, preserving Chroma's rank order
-   */
   private intersectWithRanking(metadataIds: number[], chromaIds: number[]): number[] {
     const metadataSet = new Set(metadataIds);
     const rankedIds: number[] = [];

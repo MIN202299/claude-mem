@@ -1,29 +1,19 @@
-/**
- * File Context Handler - PreToolUse
- *
- * Injects relevant observation history when Claude reads/edits a file,
- * so it can avoid duplicating past work.
- */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
+import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { parseJsonArray } from '../../shared/timeline-formatting.js';
 import { statSync } from 'fs';
 import path from 'path';
-import { isProjectExcluded } from '../../utils/project-filter.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { getProjectContext } from '../../utils/project-name.js';
 
-/** Skip the gate for files smaller than this — timeline overhead exceeds file read cost. */
 const FILE_READ_GATE_MIN_BYTES = 1_500;
 
-/** Fetch more candidates than the display limit so dedup still fills 15 slots. */
 const FETCH_LOOKAHEAD_LIMIT = 40;
 
-/** Maximum observations to show in the timeline. */
 const DISPLAY_LIMIT = 15;
+const MAX_FILE_CONTEXT_PATHS = 10;
 
 const TYPE_ICONS: Record<string, string> = {
   decision: '\u2696\uFE0F',
@@ -58,21 +48,11 @@ interface ObservationRow {
   files_modified: string | null;
 }
 
-/**
- * Deduplicate and rank observations for the timeline display.
- *
- * 1. Same-session dedup: keep only the most recent observation per session
- *    (input is already sorted newest-first by SQL).
- * 2. Specificity scoring: rank by how specifically the observation is about
- *    the target file (modified > read-only, fewer total files > many).
- * 3. Truncate to displayLimit.
- */
 function deduplicateObservations(
   observations: ObservationRow[],
   targetPath: string,
   displayLimit: number
 ): ObservationRow[] {
-  // Phase 1: Keep only the most recent observation per session
   const seenSessions = new Set<string>();
   const dedupedBySession: ObservationRow[] = [];
   for (const obs of observations) {
@@ -83,7 +63,6 @@ function deduplicateObservations(
     }
   }
 
-  // Phase 2: Score by specificity to the target file
   const scored = dedupedBySession.map(obs => {
     const filesRead = parseJsonArray(obs.files_read);
     const filesModified = parseJsonArray(obs.files_modified);
@@ -95,12 +74,10 @@ function deduplicateObservations(
     if (inModified) specificityScore += 2;
     if (totalFiles <= 3) specificityScore += 2;
     else if (totalFiles <= 8) specificityScore += 1;
-    // totalFiles > 8: no bonus (survey-like observation)
 
     return { obs, specificityScore };
   });
 
-  // Stable sort: higher specificity first, preserve chronological order within same score
   scored.sort((a, b) => b.specificityScore - a.specificityScore);
 
   return scored.slice(0, displayLimit).map(s => s.obs);
@@ -108,12 +85,9 @@ function deduplicateObservations(
 
 function formatFileTimeline(
   observations: ObservationRow[],
-  filePath: string,
-  truncated: boolean
+  filePath: string
 ): string {
-  // Escape filePath for safe interpolation into recovery hints (quotes, backslashes, newlines)
   const safePath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  // Group observations by day
   const byDay = new Map<string, ObservationRow[]>();
   for (const obs of observations) {
     const day = formatDate(obs.created_at_epoch);
@@ -123,16 +97,14 @@ function formatFileTimeline(
     byDay.get(day)!.push(obs);
   }
 
-  // Sort days chronologically (use earliest observation in each group, not first — which is specificity-sorted)
   const sortedDays = Array.from(byDay.entries()).sort((a, b) => {
     const aEpoch = Math.min(...a[1].map(o => o.created_at_epoch));
     const bEpoch = Math.min(...b[1].map(o => o.created_at_epoch));
     return aEpoch - bEpoch;
   });
 
-  // Include current date/time so the model can judge recency of observations
   const now = new Date();
-  const currentDate = now.toLocaleDateString('en-CA'); // YYYY-MM-DD
+  const currentDate = now.toLocaleDateString('en-CA'); 
   const currentTime = now.toLocaleTimeString('en-US', {
     hour: 'numeric',
     minute: '2-digit',
@@ -140,21 +112,14 @@ function formatFileTimeline(
   }).toLowerCase().replace(' ', '');
   const currentTimezone = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
 
-  const headerLine = truncated
-    ? `This file has prior observations. Only line 1 was read to save tokens.`
-    : `This file has prior observations. The requested section was read normally.`;
-
   const lines: string[] = [
     `Current: ${currentDate} ${currentTime} ${currentTimezone}`,
-    headerLine,
-    `- **Already know enough?** The timeline below may be all you need (semantic priming).`,
-    `- **Need details?** get_observations([IDs]) — ~300 tokens each.`,
-    `- **Need full file?** Read again with offset/limit for the section you need.`,
-    `- **Need to edit?** Edit works — the file is registered as read. Use smart_outline("${safePath}") for line numbers.`,
+    `This file has prior observations — supplementary context follows. The Read result below is the full requested section.`,
+    `- **Need details on a past observation?** get_observations([IDs]) — ~300 tokens each.`,
+    `- **Need a structural map first?** smart_outline("${safePath}") — line numbers only, cheaper than re-reading.`,
   ];
 
   for (const [day, dayObservations] of sortedDays) {
-    // Sort within each day chronologically (deduplicateObservations reorders by specificity)
     const chronological = [...dayObservations].sort((a, b) => a.created_at_epoch - b.created_at_epoch);
     lines.push(`### ${day}`);
     for (const obs of chronological) {
@@ -170,127 +135,113 @@ function formatFileTimeline(
 
 export const fileContextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
-    // Extract file_path from toolInput
     const toolInput = input.toolInput as Record<string, unknown> | undefined;
+    const filePaths = Array.isArray(toolInput?.filePaths)
+      ? (toolInput.filePaths as unknown[]).filter((p): p is string => typeof p === 'string').slice(0, MAX_FILE_CONTEXT_PATHS)
+      : [];
     const filePath = toolInput?.file_path as string | undefined;
+    const candidatePaths = filePaths.length > 0 ? filePaths : (filePath ? [filePath] : []);
 
-    if (!filePath) {
+    if (candidatePaths.length === 0) {
       return { continue: true, suppressOutput: true };
     }
 
-    // Preserve user-supplied offset/limit to avoid read-dedup collisions (fixes #1719)
-    const userOffset = typeof toolInput?.offset === 'number' && Number.isFinite(toolInput.offset) && toolInput.offset >= 0
-      ? Math.floor(toolInput.offset) : undefined;
-    const userLimit = typeof toolInput?.limit === 'number' && Number.isFinite(toolInput.limit) && toolInput.limit > 0
-      ? Math.floor(toolInput.limit) : undefined;
-    const isTargetedRead = userOffset !== undefined || userLimit !== undefined;
-
-    // Stat the file once: size (gate) + mtime (cache invalidation).
-    // 0 = stat failed non-fatally (e.g. EPERM) — skip mtime check, fall through to truncation.
-    let fileMtimeMs = 0;
-    try {
-      const statPath = path.isAbsolute(filePath)
-        ? filePath
-        : path.resolve(input.cwd || process.cwd(), filePath);
-      const stat = statSync(statPath);
-      // Skip gate for files below the token-economics threshold — timeline (~370 tokens)
-      // costs more than reading small files directly.
-      if (stat.size < FILE_READ_GATE_MIN_BYTES) {
-        return { continue: true, suppressOutput: true };
-      }
-      fileMtimeMs = stat.mtimeMs;
-    } catch (err) {
-      if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { continue: true, suppressOutput: true };
-      }
-      // Other errors (symlink, permission denied) — fall through and let gate proceed
-      logger.debug('HOOK', 'File stat failed, proceeding with gate', { error: err instanceof Error ? err.message : String(err) });
-    }
-
-    // Check if project is excluded from tracking
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    if (input.cwd && isProjectExcluded(input.cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+    if (input.cwd && !shouldTrackProject(input.cwd)) {
       logger.debug('HOOK', 'Project excluded from tracking, skipping file context', { cwd: input.cwd });
       return { continue: true, suppressOutput: true };
     }
 
-    // Ensure worker is running
-    const workerReady = await ensureWorkerRunning();
-    if (!workerReady) {
-      return { continue: true, suppressOutput: true };
-    }
+    const timelineResults = await Promise.allSettled(
+      candidatePaths.map(candidatePath => buildFileContextTimeline(input, candidatePath))
+    );
+    const timelines: string[] = [];
 
-    // Query worker for observations related to this file
-    const context = getProjectContext(input.cwd);
-    const cwd = input.cwd || process.cwd();
-    const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
-    const relativePath = path.relative(cwd, absolutePath).split(path.sep).join("/");
-    const queryParams = new URLSearchParams({ path: relativePath });
-    // Pass all project names (parent + worktree) for unified lookup
-    if (context.allProjects.length > 0) {
-      queryParams.set('projects', context.allProjects.join(','));
-    }
-    queryParams.set('limit', String(FETCH_LOOKAHEAD_LIMIT));
-
-    let data: { observations: ObservationRow[]; count: number };
-    try {
-      const response = await workerHttpRequest(`/api/observations/by-file?${queryParams.toString()}`, { method: 'GET' });
-
-      if (!response.ok) {
-        logger.warn('HOOK', 'File context query failed, skipping', { status: response.status, filePath });
-        return { continue: true, suppressOutput: true };
+    timelineResults.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        if (result.value) timelines.push(result.value);
+        return;
       }
-
-      data = await response.json() as { observations: ObservationRow[]; count: number };
-    } catch (error) {
-      logger.warn('HOOK', 'File context fetch error, skipping', {
-        error: error instanceof Error ? error.message : String(error),
+      logger.debug('HOOK', 'File context timeline lookup failed, skipping path', {
+        filePath: candidatePaths[index],
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
       });
+    });
+
+    if (timelines.length === 0) {
       return { continue: true, suppressOutput: true };
-    }
-
-    if (!data.observations || data.observations.length === 0) {
-      return { continue: true, suppressOutput: true };
-    }
-
-    // mtime invalidation: bypass truncation when the file is newer than the latest observation.
-    // Uses >= to handle same-millisecond edits (cost: one extra full read vs risk of stuck truncation).
-    if (fileMtimeMs > 0) {
-      const newestObservationMs = Math.max(...data.observations.map(o => o.created_at_epoch));
-      if (fileMtimeMs >= newestObservationMs) {
-        logger.debug('HOOK', 'File modified since last observation, skipping truncation', {
-          filePath: relativePath,
-          fileMtimeMs,
-          newestObservationMs,
-        });
-        return { continue: true, suppressOutput: true };
-      }
-    }
-
-    // Deduplicate: one per session, ranked by specificity to this file
-    const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
-    if (dedupedObservations.length === 0) {
-      return { continue: true, suppressOutput: true };
-    }
-
-    // Unconstrained → truncate to 1 line; targeted → preserve offset/limit.
-    const truncated = !isTargetedRead;
-    const timeline = formatFileTimeline(dedupedObservations, filePath, truncated);
-    const updatedInput: Record<string, unknown> = { file_path: filePath };
-    if (isTargetedRead) {
-      if (userOffset !== undefined) updatedInput.offset = userOffset;
-      if (userLimit !== undefined) updatedInput.limit = userLimit;
-    } else {
-      updatedInput.limit = 1;
     }
 
     return {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        additionalContext: timeline,
+        additionalContext: timelines.join('\n\n---\n\n'),
         permissionDecision: 'allow',
-        updatedInput,
       },
     };
   },
 };
+
+async function buildFileContextTimeline(input: NormalizedHookInput, filePath: string): Promise<string | null> {
+  let fileMtimeMs = 0;
+  try {
+    const statPath = path.isAbsolute(filePath)
+      ? filePath
+      : path.resolve(input.cwd || process.cwd(), filePath);
+    const stat = statSync(statPath);
+    if (!stat.isFile() || stat.size < FILE_READ_GATE_MIN_BYTES) {
+      return null;
+    }
+    fileMtimeMs = stat.mtimeMs;
+  } catch (err) {
+    if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    logger.debug('HOOK', 'File stat failed, proceeding with gate', { error: err instanceof Error ? err.message : String(err) });
+  }
+
+  const context = getProjectContext(input.cwd);
+  const cwd = input.cwd || process.cwd();
+  const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+  const relativePath = path.relative(cwd, absolutePath).split(path.sep).join("/");
+  const queryParams = new URLSearchParams({ path: relativePath });
+  if (context.allProjects.length > 0) {
+    queryParams.set('projects', context.allProjects.join(','));
+  }
+  queryParams.set('limit', String(FETCH_LOOKAHEAD_LIMIT));
+
+  const result = await executeWithWorkerFallback<{ observations: ObservationRow[]; count: number }>(
+    `/api/observations/by-file?${queryParams.toString()}`,
+    'GET',
+  );
+  if (isWorkerFallback(result)) {
+    return null;
+  }
+  if (!result || !Array.isArray((result as any).observations)) {
+    logger.warn('HOOK', 'File context query returned malformed body, skipping', { filePath });
+    return null;
+  }
+  const data = result;
+
+  if (!data.observations || data.observations.length === 0) {
+    return null;
+  }
+
+  if (fileMtimeMs > 0) {
+    const newestObservationMs = Math.max(...data.observations.map(o => o.created_at_epoch));
+    if (fileMtimeMs >= newestObservationMs) {
+      logger.debug('HOOK', 'File modified since last observation, skipping context injection', {
+        filePath: relativePath,
+        fileMtimeMs,
+        newestObservationMs,
+      });
+      return null;
+    }
+  }
+
+  const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
+  if (dedupedObservations.length === 0) {
+    return null;
+  }
+
+  return formatFileTimeline(dedupedObservations, filePath);
+}

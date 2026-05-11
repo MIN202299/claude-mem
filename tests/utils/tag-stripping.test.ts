@@ -1,19 +1,8 @@
-/**
- * Tag Stripping Utility Tests
- *
- * Tests the tag privacy system for <private>, <claude-mem-context>, and <system_instruction> tags.
- * These tags enable users and the system to exclude content from memory storage.
- *
- * Sources:
- * - Implementation from src/utils/tag-stripping.ts
- * - Privacy patterns from src/services/worker/http/routes/SessionRoutes.ts
- */
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson } from '../../src/utils/tag-stripping.js';
+import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson, isInternalProtocolPayload } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
-// Suppress logger output during tests
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
 describe('Tag Stripping Utilities', () => {
@@ -77,7 +66,6 @@ describe('Tag Stripping Utilities', () => {
         }
         input += ' end';
         const result = stripMemoryTagsFromPrompt(input);
-        // Tags are stripped but spaces between them remain
         expect(result).not.toContain('<private>');
         expect(result).not.toContain('<claude-mem-context>');
         expect(result).toContain('start');
@@ -164,7 +152,6 @@ finish`;
 
     describe('ReDoS protection', () => {
       it('should handle content with many tags without hanging (< 1 second)', async () => {
-        // Generate content with many tags
         let content = '';
         for (let i = 0; i < 150; i++) {
           content += `<private>secret${i}</private> text${i} `;
@@ -174,16 +161,12 @@ finish`;
         const result = stripMemoryTagsFromPrompt(content);
         const duration = Date.now() - startTime;
 
-        // Should complete quickly despite many tags
         expect(duration).toBeLessThan(1000);
-        // Should not contain any private content
         expect(result).not.toContain('<private>');
-        // Should warn about exceeding tag limit
-        expect(loggerSpies[2]).toHaveBeenCalled(); // warn spy
+        expect(loggerSpies[2]).toHaveBeenCalled(); 
       });
 
       it('should process within reasonable time with nested-looking patterns', () => {
-        // Content that looks like it could cause backtracking
         const content = '<private>' + 'x'.repeat(10000) + '</private> keep this';
 
         const startTime = Date.now();
@@ -392,11 +375,9 @@ after`;
 
   describe('privacy enforcement integration', () => {
     it('should allow empty result to trigger privacy skip', () => {
-      // Simulates what SessionRoutes does with private-only prompts
       const prompt = '<private>entirely private prompt</private>';
       const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);
 
-      // Empty/whitespace prompts should trigger skip
       const shouldSkip = !cleanedPrompt || cleanedPrompt.trim() === '';
       expect(shouldSkip).toBe(true);
     });
@@ -408,6 +389,62 @@ after`;
       const shouldSkip = !cleanedPrompt || cleanedPrompt.trim() === '';
       expect(shouldSkip).toBe(false);
       expect(cleanedPrompt.trim()).toBe('Please help me with my code');
+    });
+  });
+
+  describe('isInternalProtocolPayload', () => {
+    it('returns false for empty input', () => {
+      expect(isInternalProtocolPayload('')).toBe(false);
+    });
+
+    it('returns true for a bare task-notification block', () => {
+      expect(isInternalProtocolPayload('<task-notification>agent done</task-notification>')).toBe(true);
+    });
+
+    it('returns true for an empty-body task-notification block', () => {
+      expect(isInternalProtocolPayload('<task-notification></task-notification>')).toBe(true);
+    });
+
+    it('returns true with surrounding whitespace', () => {
+      expect(isInternalProtocolPayload('\n  <task-notification>x</task-notification>\n')).toBe(true);
+    });
+
+    it('returns true for multi-line payload', () => {
+      const payload = '<task-notification>\nline1\nline2\n</task-notification>';
+      expect(isInternalProtocolPayload(payload)).toBe(true);
+    });
+
+    it('returns true when tag has attributes', () => {
+      expect(isInternalProtocolPayload('<task-notification data-id="42">x</task-notification>')).toBe(true);
+    });
+
+    it('returns false for partial / unclosed tag', () => {
+      expect(isInternalProtocolPayload('<task-notification>oops')).toBe(false);
+    });
+
+    it('returns false when surrounded by user text', () => {
+      const text = 'hi <task-notification>x</task-notification> more';
+      expect(isInternalProtocolPayload(text)).toBe(false);
+    });
+
+    it('returns false for unrelated tags', () => {
+      expect(isInternalProtocolPayload('<private>secret</private>')).toBe(false);
+      expect(isInternalProtocolPayload('<system-reminder>hi</system-reminder>')).toBe(false);
+    });
+
+    it('returns false for over-large input', () => {
+      const huge = '<task-notification>' + 'a'.repeat(300 * 1024);
+      expect(isInternalProtocolPayload(huge)).toBe(false);
+    });
+
+    it('returns false for two protocol blocks separated by user text', () => {
+      const text = '<task-notification>a</task-notification> hello <task-notification>b</task-notification>';
+      expect(isInternalProtocolPayload(text)).toBe(false);
+    });
+
+    it('returns false for two adjacent protocol blocks (deliberate: deny-list per single block, not concatenations)', () => {
+      const text = '<task-notification>a</task-notification><task-notification>b</task-notification>';
+      expect(isInternalProtocolPayload(text)).toBe(false);
     });
   });
 });

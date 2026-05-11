@@ -1,22 +1,4 @@
-/**
- * OpenCode Plugin for claude-mem
- *
- * Integrates claude-mem persistent memory with OpenCode (110k+ stars).
- * Runs inside OpenCode's Bun-based plugin runtime.
- *
- * Plugin hooks:
- * - tool.execute.after: Captures tool execution observations
- * - Bus events: session.created, message.updated, session.compacted,
- *   file.edited, session.deleted
- *
- * Custom tool:
- * - claude_mem_search: Search memory database from within OpenCode
- */
-
-// ============================================================================
-// Minimal type declarations for OpenCode Plugin SDK
-// These match the runtime API provided by @opencode-ai/plugin
-// ============================================================================
+import { z } from "zod";
 
 interface OpenCodeProject {
   name?: string;
@@ -29,7 +11,7 @@ interface OpenCodePluginContext {
   directory: string;
   worktree: string;
   serverUrl: URL;
-  $: unknown; // BunShell
+  $: unknown; 
 }
 
 interface ToolExecuteAfterInput {
@@ -51,7 +33,6 @@ interface ToolDefinition {
   execute: (args: Record<string, unknown>, context: unknown) => Promise<string>;
 }
 
-// Bus event payloads
 interface SessionCreatedEvent {
   event: {
     sessionID: string;
@@ -90,43 +71,20 @@ interface SessionDeletedEvent {
   };
 }
 
-// ============================================================================
-// Constants
-// ============================================================================
+function resolveWorkerPort(): string {
+  const fromEnv = process.env.CLAUDE_MEM_WORKER_PORT;
+  const parsed = fromEnv ? Number.parseInt(fromEnv.trim(), 10) : NaN;
+  if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535) {
+    return String(parsed);
+  }
+  const uid = typeof process.getuid === "function" ? process.getuid() : 77;
+  return String(37700 + (uid % 100));
+}
 
-const WORKER_BASE_URL = "http://127.0.0.1:37777";
+const WORKER_BASE_URL = `http://127.0.0.1:${resolveWorkerPort()}`;
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
-// ============================================================================
-// Worker HTTP Client
-// ============================================================================
-
-async function workerPost(
-  path: string,
-  body: Record<string, unknown>,
-): Promise<Record<string, unknown> | null> {
-  let response: Response;
-  try {
-    response = await fetch(`${WORKER_BASE_URL}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  } catch (error: unknown) {
-    // Gracefully handle ECONNREFUSED — worker may not be running
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
-      console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
-    }
-    return null;
-  }
-
-  if (!response.ok) {
-    console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
-    return null;
-  }
-  return (await response.json()) as Record<string, unknown>;
-}
+const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
 function workerPostFireAndForget(
   path: string,
@@ -134,7 +92,7 @@ function workerPostFireAndForget(
 ): void {
   fetch(`${WORKER_BASE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: JSON_HEADERS,
     body: JSON.stringify(body),
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -146,7 +104,7 @@ function workerPostFireAndForget(
 
 async function workerGetText(path: string): Promise<string | null> {
   try {
-    const response = await fetch(`${WORKER_BASE_URL}${path}`);
+    const response = await fetch(`${WORKER_BASE_URL}${path}`, { headers: JSON_HEADERS });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
       return null;
@@ -161,17 +119,12 @@ async function workerGetText(path: string): Promise<string | null> {
   }
 }
 
-// ============================================================================
-// Session tracking
-// ============================================================================
-
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
 function getOrCreateContentSessionId(openCodeSessionId: string): string {
   if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
-    // Evict oldest entries when the map exceeds the cap (Map preserves insertion order)
     while (contentSessionIdsByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
       const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
       if (oldestKey !== undefined) {
@@ -188,19 +141,12 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
   return contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId)!;
 }
 
-// ============================================================================
-// Plugin Entry Point
-// ============================================================================
-
 export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
   const projectName = ctx.project?.name || "opencode";
 
   console.log(`[claude-mem] OpenCode plugin loading (project: ${projectName})`);
 
   return {
-    // ------------------------------------------------------------------
-    // Direct interceptor hooks
-    // ------------------------------------------------------------------
     hooks: {
       tool: {
         execute: {
@@ -210,7 +156,6 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           ) => {
             const contentSessionId = getOrCreateContentSessionId(input.sessionID);
 
-            // Truncate long tool output
             let toolResponseText = output.output || "";
             if (toolResponseText.length > MAX_TOOL_RESPONSE_LENGTH) {
               toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
@@ -228,9 +173,6 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       },
     },
 
-    // ------------------------------------------------------------------
-    // Bus event handlers
-    // ------------------------------------------------------------------
     event: (eventName: string, payload: unknown) => {
       switch (eventName) {
         case "session.created": {
@@ -248,7 +190,6 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         case "message.updated": {
           const { event } = payload as MessageUpdatedEvent;
 
-          // Only capture assistant messages as observations
           if (event.role !== "assistant") break;
 
           const contentSessionId = getOrCreateContentSessionId(event.sessionID);
@@ -297,33 +238,18 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
 
         case "session.deleted": {
           const { event } = payload as SessionDeletedEvent;
-          const contentSessionId = contentSessionIdsByOpenCodeSessionId.get(
-            event.sessionID,
-          );
-
-          if (contentSessionId) {
-            workerPostFireAndForget("/api/sessions/complete", {
-              contentSessionId,
-            });
-            contentSessionIdsByOpenCodeSessionId.delete(event.sessionID);
-          }
+          contentSessionIdsByOpenCodeSessionId.delete(event.sessionID);
           break;
         }
       }
     },
 
-    // ------------------------------------------------------------------
-    // Custom tools
-    // ------------------------------------------------------------------
     tool: {
       claude_mem_search: {
         description:
           "Search claude-mem memory database for past observations, sessions, and context",
         args: {
-          query: {
-            type: "string",
-            description: "Search query for memory observations",
-          },
+          query: z.string().describe("Search query for memory observations"),
         },
         async execute(
           args: Record<string, unknown>,

@@ -1,10 +1,9 @@
-// Tests for file-context cache validation fix (#1719)
+
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { mkdtempSync, writeFileSync, utimesSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, writeFileSync, utimesSync, rmSync } from 'fs';
 import { tmpdir, homedir } from 'os';
 import { join } from 'path';
 
-// Mock modules that cause import chain issues — MUST be before handler imports
 mock.module('../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
     get: (key: string) => {
@@ -38,11 +37,10 @@ mock.module('../../src/utils/project-filter.js', () => ({
   isProjectExcluded: () => false,
 }));
 
-// Import after mocks
 import { fileContextHandler } from '../../src/cli/handlers/file-context.js';
 import { logger } from '../../src/utils/logger.js';
 
-const PADDING = 'x'.repeat(2_000); // ensures file > FILE_READ_GATE_MIN_BYTES (1500)
+const PADDING = 'x'.repeat(2_000); 
 
 let tmpDir: string;
 let testFile: string;
@@ -89,9 +87,8 @@ afterEach(() => {
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 });
 
-describe('fileContextHandler — cache validation fix (#1719)', () => {
-  it('truncates to limit:1 for an unconstrained Read (existing behavior)', async () => {
-    // File mtime is "now" (just written). Make observations newer to avoid mtime bypass.
+describe('fileContextHandler — #2094 (no Read mutation)', () => {
+  it('injects timeline context but never sets updatedInput on an unconstrained Read', async () => {
     const future = Date.now() + 60_000;
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
       makeObservationsResponse([{ id: 1, created_at_epoch: future }])
@@ -105,13 +102,11 @@ describe('fileContextHandler — cache validation fix (#1719)', () => {
     });
 
     expect(result.hookSpecificOutput).toBeDefined();
-    expect(result.hookSpecificOutput!.updatedInput).toEqual({
-      file_path: testFile,
-      limit: 1,
-    });
+    expect(result.hookSpecificOutput!.additionalContext).toContain('prior observations');
+    expect((result.hookSpecificOutput as any).updatedInput).toBeUndefined();
   });
 
-  it('preserves user-supplied offset/limit on a targeted Read (#1719 fix)', async () => {
+  it('does not set updatedInput on a targeted Read either', async () => {
     const future = Date.now() + 60_000;
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
       makeObservationsResponse([{ id: 1, created_at_epoch: future }])
@@ -125,56 +120,10 @@ describe('fileContextHandler — cache validation fix (#1719)', () => {
     });
 
     expect(result.hookSpecificOutput).toBeDefined();
-    expect(result.hookSpecificOutput!.updatedInput).toEqual({
-      file_path: testFile,
-      offset: 289,
-      limit: 140,
-    });
+    expect((result.hookSpecificOutput as any).updatedInput).toBeUndefined();
   });
 
-  it('preserves user-supplied offset only', async () => {
-    const future = Date.now() + 60_000;
-    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
-      makeObservationsResponse([{ id: 1, created_at_epoch: future }])
-    );
-
-    const result = await fileContextHandler.execute({
-      sessionId: 'sess',
-      cwd: tmpDir,
-      toolName: 'Read',
-      toolInput: { file_path: testFile, offset: 100 },
-    });
-
-    expect(result.hookSpecificOutput!.updatedInput).toEqual({
-      file_path: testFile,
-      offset: 100,
-    });
-    expect((result.hookSpecificOutput!.updatedInput as any).limit).toBeUndefined();
-  });
-
-  it('preserves user-supplied limit only', async () => {
-    const future = Date.now() + 60_000;
-    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
-      makeObservationsResponse([{ id: 1, created_at_epoch: future }])
-    );
-
-    const result = await fileContextHandler.execute({
-      sessionId: 'sess',
-      cwd: tmpDir,
-      toolName: 'Read',
-      toolInput: { file_path: testFile, limit: 50 },
-    });
-
-    expect(result.hookSpecificOutput!.updatedInput).toEqual({
-      file_path: testFile,
-      limit: 50,
-    });
-    // offset must NOT be present
-    expect((result.hookSpecificOutput!.updatedInput as any).offset).toBeUndefined();
-  });
-
-  it('bypasses truncation when file mtime is newer than newest observation (#1719 fix)', async () => {
-    // Backdate observations 1 hour into the past so the just-written file is newer.
+  it('skips entirely when file mtime is newer than newest observation (#1719 still honored)', async () => {
     const stale = Date.now() - 3_600_000;
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
       makeObservationsResponse([
@@ -190,13 +139,11 @@ describe('fileContextHandler — cache validation fix (#1719)', () => {
       toolInput: { file_path: testFile },
     });
 
-    // Pass-through: no hookSpecificOutput, no updatedInput rewrite
     expect(result.continue).toBe(true);
     expect(result.hookSpecificOutput).toBeUndefined();
   });
 
-  it('still truncates when file mtime is older than newest observation', async () => {
-    // Backdate the file by 1 hour, observations stamped "now"
+  it('still injects context when file mtime is older than newest observation', async () => {
     const past = (Date.now() - 3_600_000) / 1000;
     utimesSync(testFile, past, past);
 
@@ -213,13 +160,11 @@ describe('fileContextHandler — cache validation fix (#1719)', () => {
     });
 
     expect(result.hookSpecificOutput).toBeDefined();
-    expect(result.hookSpecificOutput!.updatedInput).toEqual({
-      file_path: testFile,
-      limit: 1,
-    });
+    expect(result.hookSpecificOutput!.additionalContext).toContain('prior observations');
+    expect((result.hookSpecificOutput as any).updatedInput).toBeUndefined();
   });
 
-  it('targeted-read header line reflects that the section was read normally', async () => {
+  it('header text no longer claims the file was truncated', async () => {
     const future = Date.now() + 60_000;
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
       makeObservationsResponse([{ id: 1, created_at_epoch: future }])
@@ -229,11 +174,81 @@ describe('fileContextHandler — cache validation fix (#1719)', () => {
       sessionId: 'sess',
       cwd: tmpDir,
       toolName: 'Read',
-      toolInput: { file_path: testFile, offset: 10, limit: 20 },
+      toolInput: { file_path: testFile },
     });
 
-    const ctx = result.hookSpecificOutput!.additionalContext;
-    expect(ctx).toContain('The requested section was read normally');
+    const ctx = result.hookSpecificOutput!.additionalContext as string;
     expect(ctx).not.toContain('Only line 1 was read');
+    expect(ctx).toContain('full requested section');
+  });
+
+  it('accepts a Codex filePaths array and joins per-file context blocks', async () => {
+    const otherFile = join(tmpDir, 'other.md');
+    writeFileSync(otherFile, PADDING);
+
+    const future = Date.now() + 60_000;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((url: string | URL | Request) => {
+      const text = String(url);
+      if (text.includes('other.md')) {
+        return Promise.resolve(makeObservationsResponse([{ id: 2, created_at_epoch: future, title: 'Other file context' }]));
+      }
+      return Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: future, title: 'Main file context' }]));
+    });
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Bash',
+      toolInput: { filePaths: [testFile, otherFile] },
+    });
+
+    const ctx = result.hookSpecificOutput!.additionalContext as string;
+    expect(ctx).toContain('Main file context');
+    expect(ctx).toContain('Other file context');
+    expect(ctx).toContain('\n\n---\n\n');
+  });
+
+  it('keeps successful timelines when one file lookup fails', async () => {
+    const otherFile = join(tmpDir, 'other.md');
+    writeFileSync(otherFile, PADDING);
+
+    const future = Date.now() + 60_000;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((url: string | URL | Request) => {
+      const text = String(url);
+      if (text.includes('other.md')) {
+        return Promise.reject(new Error('worker unavailable'));
+      }
+      return Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: future, title: 'Main file context' }]));
+    });
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Bash',
+      toolInput: { filePaths: [testFile, otherFile] },
+    });
+
+    const ctx = result.hookSpecificOutput!.additionalContext as string;
+    expect(ctx).toContain('Main file context');
+    expect(ctx).not.toContain('worker unavailable');
+  });
+
+  it('skips directories before querying file history', async () => {
+    const directoryPath = join(tmpDir, 'large-dir');
+    mkdirSync(directoryPath);
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }])
+    );
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Bash',
+      toolInput: { filePaths: [directoryPath] },
+    });
+
+    expect(result.continue).toBe(true);
+    expect(result.hookSpecificOutput).toBeUndefined();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
