@@ -1,19 +1,17 @@
 import { existsSync, readFileSync, rmSync } from 'fs';
-import { homedir } from 'os';
-import path from 'path';
 import { logger } from '../utils/logger.js';
-import { getProcessRegistry, isPidAlive, type ManagedProcessInfo, type ProcessRegistry } from './process-registry.js';
+import {
+  getProcessRegistry,
+  verifyPidFileOwnership,
+  type ManagedProcessInfo,
+  type PidInfo,
+  type ProcessRegistry
+} from './process-registry.js';
 import { runShutdownCascade } from './shutdown.js';
 import { startHealthChecker, stopHealthChecker } from './health-checker.js';
+import { paths } from '../shared/paths.js';
 
-const DATA_DIR = path.join(homedir(), '.claude-mem');
-const PID_FILE = path.join(DATA_DIR, 'worker.pid');
-
-interface PidInfo {
-  pid: number;
-  port: number;
-  startedAt: string;
-}
+const PID_FILE = paths.workerPid();
 
 interface ValidateWorkerPidOptions {
   logAlive?: boolean;
@@ -146,10 +144,6 @@ export async function startSupervisor(): Promise<void> {
   await supervisorSingleton.start();
 }
 
-export async function stopSupervisor(): Promise<void> {
-  await supervisorSingleton.stop();
-}
-
 export function getSupervisor(): Supervisor {
   return supervisorSingleton;
 }
@@ -168,7 +162,7 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
   let pidInfo: PidInfo | null = null;
 
   try {
-    pidInfo = JSON.parse(readFileSync(pidFilePath, 'utf-8')) as PidInfo;
+    pidInfo = JSON.parse(readFileSync(pidFilePath, 'utf-8')) as PidInfo | null;
   } catch (error: unknown) {
     if (error instanceof Error) {
       logger.warn('SYSTEM', 'Failed to parse worker PID file, removing it', { path: pidFilePath }, error);
@@ -182,7 +176,8 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
     return 'invalid';
   }
 
-  if (isPidAlive(pidInfo.pid)) {
+  const isAlive = verifyPidFileOwnership(pidInfo);
+  if (isAlive && pidInfo) {
     if (options.logAlive ?? true) {
       logger.info('SYSTEM', 'Worker already running (PID alive)', {
         existingPid: pidInfo.pid,
@@ -193,10 +188,10 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
     return 'alive';
   }
 
-  logger.info('SYSTEM', 'Removing stale PID file (worker process is dead)', {
-    pid: pidInfo.pid,
-    port: pidInfo.port,
-    startedAt: pidInfo.startedAt
+  logger.info('SYSTEM', 'Removing stale PID file (worker process is dead or PID has been reused)', {
+    pid: pidInfo?.pid,
+    port: pidInfo?.port,
+    startedAt: pidInfo?.startedAt
   });
   rmSync(pidFilePath, { force: true });
   return 'stale';

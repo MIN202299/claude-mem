@@ -1,21 +1,23 @@
 export interface NormalizedHookInput {
   sessionId: string;
   cwd: string;
-  platform?: string;   // 'claude-code', 'cursor', 'gemini-cli', etc.
+  platform?: string;   
   prompt?: string;
   toolName?: string;
   toolInput?: unknown;
   toolResponse?: unknown;
   transcriptPath?: string;
-  // Cursor-specific fields
-  filePath?: string;   // afterFileEdit
-  edits?: unknown[];   // afterFileEdit
-  // Platform-specific metadata (source, reason, trigger, mcp_context, etc.)
+  lastAssistantMessage?: string;
+  turnId?: string;
+  stopHookActive?: boolean;
+  permissionMode?: string;
+  model?: string;
+  sessionSource?: 'startup' | 'resume' | 'clear';
+  filePath?: string;   
+  edits?: unknown[];   
   metadata?: Record<string, unknown>;
-  // Claude Code subagent identity — present only when hook fires inside a subagent.
-  // Main session has both undefined. Discriminator for subagent context.
-  agentId?: string;      // Claude Code subagent agent_id (undefined in main session)
-  agentType?: string;    // Claude Code subagent agent_type (undefined in main session)
+  agentId?: string;      
+  agentType?: string;    
 }
 
 export interface HookResult {
@@ -29,6 +31,8 @@ export interface HookResult {
     updatedInput?: Record<string, unknown>;
   };
   systemMessage?: string;
+  decision?: 'block' | 'approve';
+  reason?: string;
   exitCode?: number;
 }
 

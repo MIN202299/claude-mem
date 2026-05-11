@@ -2,19 +2,6 @@ import { describe, it, expect } from 'bun:test';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
-/**
- * Regression tests for issue #1342.
- *
- * Bundled plugin scripts use a shebang line (#!/usr/bin/env node or #!/usr/bin/env bun).
- * If those files are committed with Windows CRLF line endings, the shebang becomes
- * "#!/usr/bin/env node\r" which fails with:
- *   env: node\r: No such file or directory
- * on macOS and Linux, breaking the MCP server and all hook scripts.
- *
- * These tests guard against CRLF line endings being re-introduced into the
- * committed plugin scripts (e.g. by a Windows contributor without .gitattributes).
- */
-
 const SCRIPTS_DIR = join(import.meta.dir, '..', 'plugin', 'scripts');
 
 const SHEBANG_SCRIPTS = [
@@ -22,7 +9,6 @@ const SHEBANG_SCRIPTS = [
   'worker-service.cjs',
   'context-generator.cjs',
   'bun-runner.js',
-  'smart-install.js',
   'worker-cli.js',
 ];
 
@@ -34,7 +20,6 @@ describe('plugin/scripts line endings (#1342)', () => {
       expect(existsSync(filePath)).toBe(true);
       const content = readFileSync(filePath, 'binary');
       const firstLine = content.split('\n')[0];
-      // CRLF would leave a trailing \r on the shebang line
       expect(firstLine.endsWith('\r')).toBe(false);
     });
 

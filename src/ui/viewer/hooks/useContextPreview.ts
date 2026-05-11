@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { ProjectCatalog, Settings } from '../types';
+import { authFetch } from '../utils/api';
 
 interface UseContextPreviewResult {
   preview: string;
@@ -34,12 +35,11 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
 
-  // Fetch projects on mount
   useEffect(() => {
     async function fetchProjects() {
       let data: ProjectCatalog;
       try {
-        const response = await fetch('/api/projects');
+        const response = await authFetch('/api/projects');
         data = await response.json() as ProjectCatalog;
       } catch (err: unknown) {
         console.error('Failed to fetch projects:', err instanceof Error ? err.message : String(err));
@@ -100,7 +100,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     }
 
     try {
-      const response = await fetch(`/api/context/preview?${params}`);
+      const response = await authFetch(`/api/context/preview?${params}`);
       const text = await response.text();
 
       if (response.ok) {
@@ -116,7 +116,6 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     setIsLoading(false);
   }, [selectedProject, selectedSource]);
 
-  // Debounced refresh when settings or selectedProject change
   useEffect(() => {
     const timeout = setTimeout(() => {
       refresh();

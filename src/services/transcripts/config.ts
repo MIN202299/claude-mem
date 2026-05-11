@@ -1,10 +1,11 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
+import { paths } from '../../shared/paths.js';
 import type { TranscriptSchema, TranscriptWatchConfig } from './types.js';
 
-export const DEFAULT_CONFIG_PATH = join(homedir(), '.claude-mem', 'transcript-watch.json');
-export const DEFAULT_STATE_PATH = join(homedir(), '.claude-mem', 'transcript-watch-state.json');
+export const DEFAULT_CONFIG_PATH = paths.transcriptsConfig();
+export const DEFAULT_STATE_PATH = paths.transcriptsState();
 
 const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
   name: 'codex',
@@ -46,15 +47,14 @@ const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
     },
     {
       name: 'tool-use',
-      match: { path: 'payload.type', in: ['function_call', 'custom_tool_call', 'web_search_call', 'exec_command'] },
+      match: { path: 'payload.type', in: ['function_call', 'custom_tool_call', 'web_search_call'] },
       action: 'tool_use',
       fields: {
         toolId: 'payload.call_id',
         toolName: {
           coalesce: [
             'payload.name',
-            'payload.type',
-            { value: 'web_search' }
+            'payload.type'
           ]
         },
         toolInput: {
@@ -69,7 +69,7 @@ const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
     },
     {
       name: 'tool-result',
-      match: { path: 'payload.type', in: ['function_call_output', 'custom_tool_call_output', 'exec_command_output'] },
+      match: { path: 'payload.type', in: ['function_call_output', 'custom_tool_call_output'] },
       action: 'tool_result',
       fields: {
         toolId: 'payload.call_id',
@@ -77,8 +77,31 @@ const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
       }
     },
     {
+      name: 'exec-command-end',
+      match: { path: 'payload.type', in: ['exec_command_end', 'exec_command_output'] },
+      action: 'observation',
+      fields: {
+        toolUseId: 'payload.call_id',
+        toolName: { value: 'exec_command' },
+        toolInput: {
+          coalesce: [
+            'payload.command',
+            'payload.input'
+          ]
+        },
+        toolResponse: {
+          coalesce: [
+            'payload.aggregated_output',
+            'payload.output',
+            'payload.stdout',
+            'payload.stderr'
+          ]
+        }
+      }
+    },
+    {
       name: 'session-end',
-      match: { path: 'payload.type', in: ['turn_aborted', 'turn_completed'] },
+      match: { path: 'payload.type', in: ['turn_aborted', 'turn_completed', 'task_complete'] },
       action: 'session_end'
     }
   ]
@@ -94,11 +117,7 @@ export const SAMPLE_CONFIG: TranscriptWatchConfig = {
       name: 'codex',
       path: '~/.codex/sessions/**/*.jsonl',
       schema: 'codex',
-      startAtEnd: true,
-      context: {
-        mode: 'agents',
-        updateOn: ['session_start', 'session_end']
-      }
+      startAtEnd: true
     }
   ],
   stateFile: DEFAULT_STATE_PATH

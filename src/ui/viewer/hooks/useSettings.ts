@@ -3,6 +3,7 @@ import { Settings } from '../types';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
+import { authFetch } from '../utils/api';
 
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -10,26 +11,25 @@ export function useSettings() {
   const [saveStatus, setSaveStatus] = useState('');
 
   useEffect(() => {
-    // Load initial settings
-    fetch(API_ENDPOINTS.SETTINGS)
-      .then(res => res.json())
+    authFetch(API_ENDPOINTS.SETTINGS)
+      .then(async res => {
+        if (!res.ok) {
+          throw new Error(`Failed to load settings (${res.status})`);
+        }
+        return res.json();
+      })
       .then(data => {
-        // Use ?? (nullish coalescing) instead of || so that falsy values
-        // like '0', 'false', and '' from the backend are preserved.
-        // Using || would silently replace them with the UI defaults.
         setSettings({
           CLAUDE_MEM_MODEL: data.CLAUDE_MEM_MODEL ?? DEFAULT_SETTINGS.CLAUDE_MEM_MODEL,
           CLAUDE_MEM_CONTEXT_OBSERVATIONS: data.CLAUDE_MEM_CONTEXT_OBSERVATIONS ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS,
           CLAUDE_MEM_WORKER_PORT: data.CLAUDE_MEM_WORKER_PORT ?? DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT,
           CLAUDE_MEM_WORKER_HOST: data.CLAUDE_MEM_WORKER_HOST ?? DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_HOST,
 
-          // AI Provider Configuration
           CLAUDE_MEM_PROVIDER: data.CLAUDE_MEM_PROVIDER ?? DEFAULT_SETTINGS.CLAUDE_MEM_PROVIDER,
           CLAUDE_MEM_GEMINI_API_KEY: data.CLAUDE_MEM_GEMINI_API_KEY ?? DEFAULT_SETTINGS.CLAUDE_MEM_GEMINI_API_KEY,
           CLAUDE_MEM_GEMINI_MODEL: data.CLAUDE_MEM_GEMINI_MODEL ?? DEFAULT_SETTINGS.CLAUDE_MEM_GEMINI_MODEL,
           CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: data.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED ?? DEFAULT_SETTINGS.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED,
 
-          // OpenRouter Configuration
           CLAUDE_MEM_OPENROUTER_API_KEY: data.CLAUDE_MEM_OPENROUTER_API_KEY ?? DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_API_KEY,
           CLAUDE_MEM_OPENROUTER_MODEL: data.CLAUDE_MEM_OPENROUTER_MODEL ?? DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_MODEL,
           CLAUDE_MEM_OPENROUTER_SITE_URL: data.CLAUDE_MEM_OPENROUTER_SITE_URL ?? DEFAULT_SETTINGS.CLAUDE_MEM_OPENROUTER_SITE_URL,
@@ -40,18 +40,15 @@ export function useSettings() {
           CLAUDE_MEM_CUSTOM_API_KEY: data.CLAUDE_MEM_CUSTOM_API_KEY ?? DEFAULT_SETTINGS.CLAUDE_MEM_CUSTOM_API_KEY,
           CLAUDE_MEM_CUSTOM_MODEL: data.CLAUDE_MEM_CUSTOM_MODEL ?? DEFAULT_SETTINGS.CLAUDE_MEM_CUSTOM_MODEL,
 
-          // Token Economics Display
           CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: data.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS,
           CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: data.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS,
           CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: data.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT,
           CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: data.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT,
 
-          // Display Configuration
           CLAUDE_MEM_CONTEXT_FULL_COUNT: data.CLAUDE_MEM_CONTEXT_FULL_COUNT ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_COUNT,
           CLAUDE_MEM_CONTEXT_FULL_FIELD: data.CLAUDE_MEM_CONTEXT_FULL_FIELD ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_FIELD,
           CLAUDE_MEM_CONTEXT_SESSION_COUNT: data.CLAUDE_MEM_CONTEXT_SESSION_COUNT ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SESSION_COUNT,
 
-          // Feature Toggles
           CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: data.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY,
           CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: data.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE ?? DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE,
         });
@@ -65,20 +62,30 @@ export function useSettings() {
     setIsSaving(true);
     setSaveStatus('Saving...');
 
-    const response = await fetch(API_ENDPOINTS.SETTINGS, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newSettings)
-    });
+    try {
+      const response = await authFetch(API_ENDPOINTS.SETTINGS, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newSettings)
+      });
 
-    const result = await response.json();
+      if (!response.ok) {
+        setSaveStatus(`✗ Error: ${response.status === 401 ? 'Unauthorized' : response.statusText}`);
+        setIsSaving(false);
+        return;
+      }
 
-    if (result.success) {
-      setSettings(newSettings);
-      setSaveStatus('✓ Saved');
-      setTimeout(() => setSaveStatus(''), TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
-    } else {
-      setSaveStatus(`✗ Error: ${result.error}`);
+      const result = await response.json();
+
+      if (result.success) {
+        setSettings(newSettings);
+        setSaveStatus('✓ Saved');
+        setTimeout(() => setSaveStatus(''), TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
+      } else {
+        setSaveStatus(`✗ Error: ${result.error}`);
+      }
+    } catch (error) {
+      setSaveStatus(`✗ Error: ${error instanceof Error ? error.message : 'Network error'}`);
     }
 
     setIsSaving(false);

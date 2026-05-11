@@ -1,33 +1,50 @@
 import path from "path";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync } from "fs";
+import { execSync } from "child_process";
+import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
-import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
+import { HOOK_TIMEOUTS, HOOK_EXIT_CODES, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
-import { MARKETPLACE_ROOT } from "./paths.js";
+import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
+import { loadFromFileOnce } from "./hook-settings.js";
+import { validateWorkerPidFile } from "../supervisor/index.js";
 
-// Named constants for health checks
-// Allow env var override for users on slow systems (e.g., CLAUDE_MEM_HEALTH_TIMEOUT_MS=10000)
-const HEALTH_CHECK_TIMEOUT_MS = (() => {
-  const envVal = process.env.CLAUDE_MEM_HEALTH_TIMEOUT_MS;
+function readTimeoutEnv(
+  envName: string,
+  defaultValue: number,
+  bounds: { min: number; max: number }
+): number {
+  const envVal = process.env[envName];
   if (envVal) {
     const parsed = parseInt(envVal, 10);
-    if (Number.isFinite(parsed) && parsed >= 500 && parsed <= 300000) {
+    if (Number.isFinite(parsed) && parsed >= bounds.min && parsed <= bounds.max) {
       return parsed;
     }
-    // Invalid env var — log once and use default
-    logger.warn('SYSTEM', 'Invalid CLAUDE_MEM_HEALTH_TIMEOUT_MS, using default', {
-      value: envVal, min: 500, max: 300000
+    logger.warn('SYSTEM', `Invalid ${envName}, using default`, {
+      value: envVal, min: bounds.min, max: bounds.max
     });
   }
-  return getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
-})();
+  return defaultValue;
+}
 
-/**
- * Fetch with a timeout using Promise.race instead of AbortSignal.
- * AbortSignal.timeout() causes a libuv assertion crash in Bun on Windows,
- * so we use a racing setTimeout pattern that avoids signal cleanup entirely.
- * The orphaned fetch is harmless since the process exits shortly after.
- */
+const HEALTH_CHECK_TIMEOUT_MS = readTimeoutEnv(
+  'CLAUDE_MEM_HEALTH_TIMEOUT_MS',
+  getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK),
+  { min: 500, max: 300000 }
+);
+
+const API_REQUEST_TIMEOUT_MS = readTimeoutEnv(
+  'CLAUDE_MEM_API_TIMEOUT_MS',
+  getTimeout(HOOK_TIMEOUTS.API_REQUEST),
+  { min: 500, max: 300000 }
+);
+
+const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
+  'CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS',
+  getTimeout(HOOK_TIMEOUTS.HOOK_READINESS_WAIT),
+  { min: 0, max: 300000 }
+);
+
 export function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
   return new Promise((resolve, reject) => {
     const timeoutId = setTimeout(
@@ -41,15 +58,9 @@ export function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs:
   });
 }
 
-// Cache to avoid repeated settings file reads
 let cachedPort: number | null = null;
 let cachedHost: string | null = null;
 
-/**
- * Get the worker port number from settings
- * Uses CLAUDE_MEM_WORKER_PORT from settings file or default (37777)
- * Caches the port value to avoid repeated file reads
- */
 export function getWorkerPort(): number {
   if (cachedPort !== null) {
     return cachedPort;
@@ -61,11 +72,6 @@ export function getWorkerPort(): number {
   return cachedPort;
 }
 
-/**
- * Get the worker host address
- * Uses CLAUDE_MEM_WORKER_HOST from settings file or default (127.0.0.1)
- * Caches the host value to avoid repeated file reads
- */
 export function getWorkerHost(): string {
   if (cachedHost !== null) {
     return cachedHost;
@@ -77,27 +83,15 @@ export function getWorkerHost(): string {
   return cachedHost;
 }
 
-/**
- * Clear the cached port and host values.
- * Call this when settings are updated to force re-reading from file.
- */
 export function clearPortCache(): void {
   cachedPort = null;
   cachedHost = null;
 }
 
-/**
- * Build a full URL for a given API path.
- */
 export function buildWorkerUrl(apiPath: string): string {
   return `http://${getWorkerHost()}:${getWorkerPort()}${apiPath}`;
 }
 
-/**
- * Make an HTTP request to the worker over TCP.
- *
- * This is the preferred way for hooks to communicate with the worker.
- */
 export function workerHttpRequest(
   apiPath: string,
   options: {
@@ -108,7 +102,7 @@ export function workerHttpRequest(
   } = {}
 ): Promise<Response> {
   const method = options.method ?? 'GET';
-  const timeoutMs = options.timeoutMs ?? HEALTH_CHECK_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? API_REQUEST_TIMEOUT_MS;
 
   const url = buildWorkerUrl(apiPath);
   const init: RequestInit = { method };
@@ -125,23 +119,16 @@ export function workerHttpRequest(
   return fetch(url, init);
 }
 
-/**
- * Check if worker HTTP server is responsive.
- * Uses /api/health (liveness) instead of /api/readiness because:
- * - Hooks have 15-second timeout, but full initialization can take 5+ minutes (MCP connection)
- * - /api/health returns 200 as soon as HTTP server is up (sufficient for hook communication)
- * - /api/readiness returns 503 until full initialization completes (too slow for hooks)
- * See: https://github.com/thedotmack/claude-mem/issues/811
- */
 async function isWorkerHealthy(): Promise<boolean> {
   const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
   return response.ok;
 }
 
-/**
- * Get the current plugin version from package.json.
- * Returns 'unknown' on ENOENT/EBUSY (shutdown race condition, fix #1042).
- */
+async function isWorkerReady(): Promise<boolean> {
+  const response = await workerHttpRequest('/api/readiness', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+  return response.ok;
+}
+
 function getPluginVersion(): string {
   try {
     const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
@@ -157,9 +144,6 @@ function getPluginVersion(): string {
   }
 }
 
-/**
- * Get the running worker's version from the API
- */
 async function getWorkerVersion(): Promise<string> {
   const response = await workerHttpRequest('/api/version', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
   if (!response.ok) {
@@ -169,12 +153,6 @@ async function getWorkerVersion(): Promise<string> {
   return data.version;
 }
 
-/**
- * Check if worker version matches plugin version
- * Note: Auto-restart on version mismatch is now handled in worker-service.ts start command (issue #484)
- * This function logs for informational purposes only.
- * Skips comparison when either version is 'unknown' (fix #1042 — avoids restart loops).
- */
 async function checkWorkerVersion(): Promise<void> {
   let pluginVersion: string;
   try {
@@ -186,7 +164,6 @@ async function checkWorkerVersion(): Promise<void> {
     return;
   }
 
-  // Skip version check if plugin version couldn't be read (shutdown race)
   if (pluginVersion === 'unknown') return;
 
   let workerVersion: string;
@@ -199,11 +176,9 @@ async function checkWorkerVersion(): Promise<void> {
     return;
   }
 
-  // Skip version check if worker version is 'unknown' (avoids restart loops)
   if (workerVersion === 'unknown') return;
 
   if (pluginVersion !== workerVersion) {
-    // Just log debug info - auto-restart handles the mismatch in worker-service.ts
     logger.debug('SYSTEM', 'Version check', {
       pluginVersion,
       workerVersion,
@@ -212,28 +187,306 @@ async function checkWorkerVersion(): Promise<void> {
   }
 }
 
+function resolveWorkerScriptPath(): string | null {
+  const candidates = [
+    path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
+    path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
 
-/**
- * Ensure worker service is running
- * Quick health check - returns false if worker not healthy (doesn't block)
- * Port might be in use by another process, or worker might not be started yet
- */
-export async function ensureWorkerRunning(): Promise<boolean> {
-  // Quick health check (single attempt, no polling)
+function resolveBunRuntime(): string | null {
+  if (process.env.BUN && existsSync(process.env.BUN)) return process.env.BUN;
+
   try {
-    if (await isWorkerHealthy()) {
-      await checkWorkerVersion();  // logs warning on mismatch, doesn't restart
-      return true;  // Worker healthy
-    }
-  } catch (e) {
-    // Not healthy - log for debugging
-    logger.debug('SYSTEM', 'Worker health check failed', {
-      error: e instanceof Error ? e.message : String(e)
+    const cmd = process.platform === 'win32' ? 'where bun' : 'which bun';
+    const output = execSync(cmd, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf-8',
+      windowsHide: true,
     });
+    const firstMatch = output
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .find(line => line.length > 0);
+    return firstMatch || null;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForWorkerPort(options: { attempts: number; backoffMs: number }): Promise<boolean> {
+  let delayMs = options.backoffMs;
+  for (let attempt = 1; attempt <= options.attempts; attempt++) {
+    if (await isWorkerPortAlive()) return true;
+    if (attempt < options.attempts) {
+      await new Promise<void>(resolve => setTimeout(resolve, delayMs));
+      delayMs *= 2;
+    }
+  }
+  return false;
+}
+
+async function waitForWorkerReadiness(timeoutMs: number = HOOK_READINESS_TIMEOUT_MS): Promise<boolean> {
+  if (timeoutMs <= 0) {
+    try {
+      return await isWorkerReady();
+    } catch {
+      return false;
+    }
   }
 
-  // Port might be in use by something else, or worker not started
-  // Return false but don't throw - let caller decide how to handle
-  logger.warn('SYSTEM', 'Worker not healthy, hook will proceed gracefully');
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      if (await isWorkerReady()) return true;
+    } catch (error: unknown) {
+      logger.debug('SYSTEM', 'Worker readiness check threw', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    const remainingMs = timeoutMs - (Date.now() - start);
+    if (remainingMs <= 0) break;
+    await new Promise<void>(resolve => setTimeout(resolve, Math.min(250, remainingMs)));
+  }
   return false;
+}
+
+async function isWorkerPortAlive(): Promise<boolean> {
+  let healthy: boolean;
+  try {
+    healthy = await isWorkerHealthy();
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Worker health check threw', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+  if (!healthy) return false;
+
+  const pidStatus = validateWorkerPidFile({ logAlive: false });
+  if (pidStatus === 'missing') return true;     
+  if (pidStatus === 'alive') return true;       
+  return false;                                 
+}
+
+export async function ensureWorkerRunning(): Promise<boolean> {
+  if (await isWorkerPortAlive()) {
+    await checkWorkerVersion();
+    const ready = await waitForWorkerReadiness();
+    if (!ready) {
+      logger.warn('SYSTEM', 'Worker is healthy but not ready; skipping hook API call');
+      return false;
+    }
+    return true;
+  }
+
+  const runtimePath = resolveBunRuntime();
+  const scriptPath = resolveWorkerScriptPath();
+
+  if (!runtimePath) {
+    logger.warn('SYSTEM', 'Cannot lazy-spawn worker: Bun runtime not found on PATH');
+    return false;
+  }
+  if (!scriptPath) {
+    logger.warn('SYSTEM', 'Cannot lazy-spawn worker: worker-service.cjs not found in plugin/scripts');
+    return false;
+  }
+
+  logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
+
+  try {
+    const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
+      detached: true,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    proc.unref();
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      logger.error('SYSTEM', 'Lazy-spawn of worker failed', { runtimePath, scriptPath }, error);
+    } else {
+      logger.error('SYSTEM', 'Lazy-spawn of worker failed (non-Error)', {
+        runtimePath, scriptPath, error: String(error),
+      });
+    }
+    return false;
+  }
+
+  const alive = await waitForWorkerPort({ attempts: 3, backoffMs: 250 });
+  if (!alive) {
+    logger.warn('SYSTEM', 'Worker port did not open after lazy-spawn within 3 attempts');
+    return false;
+  }
+  const ready = await waitForWorkerReadiness();
+  if (!ready) {
+    logger.warn('SYSTEM', 'Worker lazy-spawned but did not become ready before hook readiness timeout');
+    return false;
+  }
+  return true;
+}
+
+let aliveCache: boolean | null = null;
+
+export async function ensureWorkerAliveOnce(): Promise<boolean> {
+  if (aliveCache !== null) return aliveCache;
+  aliveCache = await ensureWorkerRunning();
+  return aliveCache;
+}
+
+interface HookFailureState {
+  consecutiveFailures: number;
+  lastFailureAt: number;
+}
+
+const FAIL_LOUD_DEFAULT_THRESHOLD = 3;
+
+function getStateDir(): string {
+  return path.join(DATA_DIR, 'state');
+}
+
+function getHookFailuresPath(): string {
+  return path.join(getStateDir(), 'hook-failures.json');
+}
+
+function readHookFailureState(): HookFailureState {
+  try {
+    const raw = readFileSync(getHookFailuresPath(), 'utf-8');
+    const parsed = JSON.parse(raw) as Partial<HookFailureState>;
+    return {
+      consecutiveFailures: typeof parsed.consecutiveFailures === 'number' && Number.isFinite(parsed.consecutiveFailures)
+        ? Math.max(0, Math.floor(parsed.consecutiveFailures))
+        : 0,
+      lastFailureAt: typeof parsed.lastFailureAt === 'number' && Number.isFinite(parsed.lastFailureAt)
+        ? parsed.lastFailureAt
+        : 0,
+    };
+  } catch {
+    return { consecutiveFailures: 0, lastFailureAt: 0 };
+  }
+}
+
+function writeHookFailureStateAtomic(state: HookFailureState): void {
+  const stateDir = getStateDir();
+  const dest = getHookFailuresPath();
+  const tmp = `${dest}.tmp`;
+  try {
+    if (!existsSync(stateDir)) {
+      mkdirSync(stateDir, { recursive: true });
+    }
+    writeFileSync(tmp, JSON.stringify(state), 'utf-8');
+    renameSync(tmp, dest);
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Failed to persist hook-failure counter', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function getFailLoudThreshold(): number {
+  try {
+    const settings = loadFromFileOnce();
+    const raw = settings.CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD;
+    const parsed = parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+  } catch {
+    // settings unreadable — fall through to default
+  }
+  return FAIL_LOUD_DEFAULT_THRESHOLD;
+}
+
+function recordWorkerUnreachable(): number {
+  const state = readHookFailureState();
+  const next: HookFailureState = {
+    consecutiveFailures: state.consecutiveFailures + 1,
+    lastFailureAt: Date.now(),
+  };
+  writeHookFailureStateAtomic(next);
+
+  const threshold = getFailLoudThreshold();
+  if (next.consecutiveFailures >= threshold) {
+    process.stderr.write(
+      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.\n`
+    );
+    process.exit(HOOK_EXIT_CODES.BLOCKING_ERROR);
+  }
+  return next.consecutiveFailures;
+}
+
+function resetWorkerFailureCounter(): void {
+  const state = readHookFailureState();
+  if (state.consecutiveFailures === 0) return;       
+  writeHookFailureStateAtomic({ consecutiveFailures: 0, lastFailureAt: 0 });
+}
+
+const WORKER_FALLBACK_BRAND: unique symbol = Symbol.for('claude-mem/worker-fallback');
+
+export type WorkerFallback =
+  | { continue: true; [WORKER_FALLBACK_BRAND]: true }
+  | { continue: true; reason: string; [WORKER_FALLBACK_BRAND]: true };
+
+export type WorkerCallResult<T> = T | WorkerFallback;
+
+export function isWorkerFallback<T>(result: WorkerCallResult<T>): result is WorkerFallback {
+  return typeof result === 'object'
+    && result !== null
+    && (result as { [WORKER_FALLBACK_BRAND]?: unknown })[WORKER_FALLBACK_BRAND] === true;
+}
+
+export interface WorkerFallbackOptions {
+  timeoutMs?: number;
+}
+
+export async function executeWithWorkerFallback<T = unknown>(
+  url: string,
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+  body?: unknown,
+  options: WorkerFallbackOptions = {},
+): Promise<WorkerCallResult<T>> {
+  const alive = await ensureWorkerAliveOnce();
+  if (!alive) {
+    recordWorkerUnreachable();
+    return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
+  }
+
+  const init: { method: string; headers?: Record<string, string>; body?: string; timeoutMs?: number } = { method };
+  if (body !== undefined) {
+    init.headers = { 'Content-Type': 'application/json' };
+    init.body = JSON.stringify(body);
+  }
+  if (options.timeoutMs !== undefined) {
+    init.timeoutMs = options.timeoutMs;
+  }
+
+  const response = await workerHttpRequest(url, init);
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    resetWorkerFailureCounter();
+    if (response.status === 429 || response.status >= 500) {
+      logger.warn('SYSTEM', `Worker API ${method} ${url} returned ${response.status}; skipping hook API call`, {
+        body: text.substring(0, 200),
+      });
+      return {
+        continue: true,
+        reason: `worker_api_${response.status}`,
+        [WORKER_FALLBACK_BRAND]: true,
+      };
+    }
+
+    let parsed: unknown = text;
+    try { parsed = JSON.parse(text); } catch { /* keep raw text */ }
+    return parsed as T;
+  }
+
+  resetWorkerFailureCounter();
+  const text = await response.text();
+  if (text.length === 0) return undefined as unknown as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return text as unknown as T;
+  }
 }

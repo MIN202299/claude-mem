@@ -1,24 +1,8 @@
-/**
- * SDK Prompts Module
- * Generates prompts for the Claude Agent SDK memory worker
- */
 
 import { logger } from '../utils/logger.js';
 import type { ModeConfig } from '../services/domain/types.js';
 
-/**
- * Marker string embedded in summary prompts — used by ResponseProcessor to detect
- * whether the most recent user message was a summary request (enables observation→summary
- * coercion for #1633). Keep in sync with buildSummaryPrompt below.
- */
 export const SUMMARY_MODE_MARKER = 'MODE SWITCH: PROGRESS SUMMARY';
-
-/**
- * Maximum consecutive summary failures before the circuit breaker opens.
- * After this many failures, SessionManager.queueSummarize will skip further
- * summarize requests to prevent the infinite retry loop (#1633).
- */
-export const MAX_CONSECUTIVE_SUMMARY_FAILURES = 3;
 
 export interface Observation {
   id: number;
@@ -37,9 +21,6 @@ export interface SDKSession {
   last_assistant_message?: string;
 }
 
-/**
- * Build initial prompt to initialize the SDK agent
- */
 export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): string {
   return `${mode.prompts.system_identity}
 
@@ -58,7 +39,6 @@ ${mode.prompts.skip_guidance}
 
 ${mode.prompts.output_format_header}
 
-\`\`\`xml
 <observation>
   <type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
   <!--
@@ -91,7 +71,6 @@ ${mode.prompts.output_format_header}
     <file>${mode.prompts.xml_file_placeholder}</file>
   </files_modified>
 </observation>
-\`\`\`
 ${mode.prompts.format_examples}
 
 ${mode.prompts.footer}
@@ -99,11 +78,7 @@ ${mode.prompts.footer}
 ${mode.prompts.header_memory_start}`;
 }
 
-/**
- * Build prompt to send tool observation to SDK agent
- */
 export function buildObservationPrompt(obs: Observation): string {
-  // Safely parse tool_input and tool_output - they're already JSON strings
   let toolInput: any;
   let toolOutput: any;
 
@@ -137,9 +112,6 @@ Concrete debugging findings from logs, queue state, database rows, session routi
 Never reply with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Non-XML text is discarded.`;
 }
 
-/**
- * Build prompt to generate progress summary
- */
 export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): string {
   const lastAssistantMessage = session.last_assistant_message || (() => {
     logger.error('SDK', 'Missing last_assistant_message in session for summary prompt', {
@@ -174,27 +146,6 @@ REMINDER: Your response MUST use <summary> as the root tag, NOT <observation>.
 ${mode.prompts.summary_footer}`;
 }
 
-/**
- * Build prompt for continuation of existing session
- *
- * CRITICAL: Why contentSessionId Parameter is Required
- * ====================================================
- * This function receives contentSessionId from SDKAgent.ts, which comes from:
- * - SessionManager.initializeSession (fetched from database)
- * - SessionStore.createSDKSession (stored by new-hook.ts)
- * - new-hook.ts receives it from Claude Code's hook context
- *
- * The contentSessionId is the SAME session_id used by:
- * - NEW hook (to create/fetch session)
- * - SAVE hook (to store observations)
- * - This continuation prompt (to maintain session context)
- *
- * This is how everything stays connected - ONE session_id threading through
- * all hooks and prompts in the same conversation.
- *
- * Called when: promptNumber > 1 (see SDKAgent.ts line 150)
- * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
- */
 export function buildContinuationPrompt(userPrompt: string, promptNumber: number, contentSessionId: string, mode: ModeConfig): string {
   return `${mode.prompts.continuation_greeting}
 
@@ -217,7 +168,6 @@ ${mode.prompts.continuation_instruction}
 
 ${mode.prompts.output_format_header}
 
-\`\`\`xml
 <observation>
   <type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
   <!--
@@ -250,7 +200,6 @@ ${mode.prompts.output_format_header}
     <file>${mode.prompts.xml_file_placeholder}</file>
   </files_modified>
 </observation>
-\`\`\`
 ${mode.prompts.format_examples}
 
 ${mode.prompts.footer}

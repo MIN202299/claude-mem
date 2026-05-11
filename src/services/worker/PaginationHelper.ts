@@ -1,12 +1,5 @@
-/**
- * PaginationHelper: DRY pagination utility
- *
- * Responsibility:
- * - DRY helper for paginated queries
- * - Eliminates copy-paste across observations/summaries/prompts endpoints
- * - Efficient LIMIT+1 trick to avoid COUNT(*) query
- */
 
+import type { SQLQueryBindings } from 'bun:sqlite';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
@@ -19,15 +12,7 @@ export class PaginationHelper {
     this.dbManager = dbManager;
   }
 
-  /**
-   * Strip project path from file paths using heuristic
-   * Converts "/Users/user/project/src/file.ts" -> "src/file.ts"
-   * Uses first occurrence of project name from left (project root)
-   */
   private stripProjectPath(filePath: string, projectName: string): string {
-    // Composite names ("parent/worktree") don't appear in on-disk paths for
-    // standard git worktrees — only the checkout basename does. Match on the
-    // leaf segment so the heuristic works regardless of worktree layout.
     const leaf = projectName.includes('/') ? projectName.split('/').pop()! : projectName;
     const marker = `/${leaf}/`;
     const index = filePath.indexOf(marker);
@@ -39,20 +24,14 @@ export class PaginationHelper {
     return filePath;
   }
 
-  /**
-   * Strip project path from JSON array of file paths
-   */
   private stripProjectPaths(filePathsStr: string | null, projectName: string): string | null {
     if (!filePathsStr) return filePathsStr;
 
     try {
-      // Parse JSON array
       const paths = JSON.parse(filePathsStr) as string[];
 
-      // Strip project path from each file
       const strippedPaths = paths.map(p => this.stripProjectPath(p, projectName));
 
-      // Return as JSON string
       return JSON.stringify(strippedPaths);
     } catch (err) {
       if (err instanceof Error) {
@@ -64,9 +43,6 @@ export class PaginationHelper {
     }
   }
 
-  /**
-   * Sanitize observation by stripping project paths from files
-   */
   private sanitizeObservation(obs: Observation): Observation {
     return {
       ...obs,
@@ -75,9 +51,6 @@ export class PaginationHelper {
     };
   }
 
-  /**
-   * Get paginated observations
-   */
   getObservations(offset: number, limit: number, project?: string, platformSource?: string): PaginatedResult<Observation> {
     const db = this.dbManager.getSessionStore().db;
     let query = `
@@ -102,16 +75,13 @@ export class PaginationHelper {
       FROM observations o
       LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     `;
-    const params: unknown[] = [];
+    const params: SQLQueryBindings[] = [];
     const conditions: string[] = [];
 
     if (project) {
-      // Include adopted merged-worktree rows so the parent project's view
-      // surfaces observations that originated under its merged children.
       conditions.push('(o.project = ? OR o.merged_into_project = ?)');
       params.push(project, project);
     } else {
-      // Hide internal observer-session rows from the unfiltered UI list.
       conditions.push('o.project != ?');
       params.push(OBSERVER_SESSIONS_PROJECT);
     }
@@ -134,16 +104,12 @@ export class PaginationHelper {
       limit
     };
 
-    // Strip project paths from file paths before returning
     return {
       ...result,
       items: result.items.map(obs => this.sanitizeObservation(obs))
     };
   }
 
-  /**
-   * Get paginated summaries
-   */
   getSummaries(offset: number, limit: number, project?: string, platformSource?: string): PaginatedResult<Summary> {
     const db = this.dbManager.getSessionStore().db;
 
@@ -168,13 +134,11 @@ export class PaginationHelper {
     const conditions: string[] = [];
 
     if (project) {
-      // Include adopted merged-worktree summaries so the parent project's view
-      // surfaces rows that originated under its merged children.
       conditions.push('(ss.project = ? OR ss.merged_into_project = ?)');
       params.push(project, project);
     } else {
-      // Hide internal observer-session rows from the unfiltered UI list.
-      conditions.push("ss.project != 'observer-sessions'");
+      conditions.push('ss.project != ?');
+      params.push(OBSERVER_SESSIONS_PROJECT);
     }
 
     if (platformSource) {
@@ -200,9 +164,6 @@ export class PaginationHelper {
     };
   }
 
-  /**
-   * Get paginated user prompts
-   */
   getPrompts(offset: number, limit: number, project?: string, platformSource?: string): PaginatedResult<UserPrompt> {
     const db = this.dbManager.getSessionStore().db;
 
@@ -227,8 +188,8 @@ export class PaginationHelper {
       conditions.push('s.project = ?');
       params.push(project);
     } else {
-      // Hide internal observer-session rows from the unfiltered UI list.
-      conditions.push("s.project != 'observer-sessions'");
+      conditions.push('s.project != ?');
+      params.push(OBSERVER_SESSIONS_PROJECT);
     }
 
     if (platformSource) {
@@ -254,9 +215,6 @@ export class PaginationHelper {
     };
   }
 
-  /**
-   * Generic pagination implementation (DRY)
-   */
   private paginate<T>(
     table: string,
     columns: string,
@@ -275,7 +233,7 @@ export class PaginationHelper {
     }
 
     query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';
-    params.push(limit + 1, offset); // Fetch one extra to check hasMore
+    params.push(limit + 1, offset); 
 
     const stmt = db.prepare(query);
     const results = stmt.all(...params) as T[];

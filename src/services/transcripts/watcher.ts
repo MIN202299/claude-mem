@@ -1,5 +1,5 @@
 import { existsSync, statSync, watch as fsWatch, createReadStream } from 'fs';
-import { basename, join } from 'path';
+import { basename, join, resolve as resolvePath, sep as pathSep } from 'path';
 import { globSync } from 'glob';
 import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
@@ -35,6 +35,10 @@ class FileTailer {
   close(): void {
     this.watcher?.close();
     this.watcher = null;
+  }
+
+  poke(): void {
+    this.readNewData().catch(() => undefined);
   }
 
   private async readNewData(): Promise<void> {
@@ -84,7 +88,7 @@ export class TranscriptWatcher {
   private processor = new TranscriptEventProcessor();
   private tailers = new Map<string, FileTailer>();
   private state: TranscriptWatchState;
-  private rescanTimers: Array<NodeJS.Timeout> = [];
+  private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
 
   constructor(private config: TranscriptWatchConfig, private statePath: string) {
     this.state = loadWatchState(statePath);
@@ -101,10 +105,10 @@ export class TranscriptWatcher {
       tailer.close();
     }
     this.tailers.clear();
-    for (const timer of this.rescanTimers) {
-      clearInterval(timer);
+    for (const watcher of this.rootWatchers) {
+      watcher.close();
     }
-    this.rescanTimers = [];
+    this.rootWatchers = [];
   }
 
   private async setupWatch(watch: WatchTarget): Promise<void> {
@@ -121,16 +125,62 @@ export class TranscriptWatcher {
       await this.addTailer(filePath, watch, schema, true);
     }
 
-    const rescanIntervalMs = watch.rescanIntervalMs ?? 5000;
-      const timer = setInterval(async () => {
-      const newFiles = this.resolveWatchFiles(resolvedPath);
-      for (const filePath of newFiles) {
-        if (!this.tailers.has(filePath)) {
-          await this.addTailer(filePath, watch, schema, false);
+    const watchRoot = this.deepestNonGlobAncestor(resolvedPath);
+    if (!watchRoot || !existsSync(watchRoot)) {
+      logger.debug('TRANSCRIPT', 'Watch root does not exist, skipping fs.watch', { watch: watch.name, watchRoot });
+      return;
+    }
+
+    try {
+      const watcher = fsWatch(watchRoot, { recursive: true, persistent: true }, (event, name) => {
+        if (!name) return;
+        const changed = resolvePath(watchRoot, name).replace(/\\/g, '/');
+        const existingTailer = this.tailers.get(changed);
+        if (existingTailer) {
+          existingTailer.poke();
+          return;
+        }
+        const matches = this.resolveWatchFiles(resolvedPath);
+        for (const filePath of matches) {
+          if (!this.tailers.has(filePath)) {
+            void this.addTailer(filePath, watch, schema, false);
+          }
+        }
+      });
+      this.rootWatchers.push(watcher);
+      logger.info('TRANSCRIPT', 'Watching transcript root recursively', { watch: watch.name, watchRoot });
+    } catch (error) {
+      logger.warn('TRANSCRIPT', 'Failed to start recursive fs.watch on transcript root', {
+        watch: watch.name,
+        watchRoot,
+      }, error instanceof Error ? error : undefined);
+    }
+  }
+
+  private deepestNonGlobAncestor(inputPath: string): string {
+    if (!this.hasGlob(inputPath)) {
+      if (existsSync(inputPath)) {
+        try {
+          const stat = statSync(inputPath);
+          return stat.isDirectory() ? inputPath : resolvePath(inputPath, '..');
+        } catch {
+          return resolvePath(inputPath, '..');
         }
       }
-    }, rescanIntervalMs);
-    this.rescanTimers.push(timer);
+      return inputPath;
+    }
+
+    const segments = inputPath.split(/[/\\]/);
+    const literalSegments: string[] = [];
+    for (const segment of segments) {
+      if (/[*?[\]{}()]/.test(segment)) break;
+      literalSegments.push(segment);
+    }
+    if (literalSegments.length === 0) return '';
+    if (literalSegments.length === 1 && literalSegments[0] === '') {
+      return '';
+    }
+    return literalSegments.join(pathSep);
   }
 
   private resolveSchema(watch: WatchTarget): TranscriptSchema | null {
@@ -142,7 +192,7 @@ export class TranscriptWatcher {
 
   private resolveWatchFiles(inputPath: string): string[] {
     if (this.hasGlob(inputPath)) {
-      return globSync(inputPath, { nodir: true, absolute: true });
+      return globSync(this.normalizeGlobPattern(inputPath), { nodir: true, absolute: true });
     }
 
     if (existsSync(inputPath)) {
@@ -150,7 +200,7 @@ export class TranscriptWatcher {
         const stat = statSync(inputPath);
         if (stat.isDirectory()) {
           const pattern = join(inputPath, '**', '*.jsonl');
-          return globSync(pattern, { nodir: true, absolute: true });
+          return globSync(this.normalizeGlobPattern(pattern), { nodir: true, absolute: true });
         }
         return [inputPath];
       } catch (error: unknown) {
@@ -160,6 +210,10 @@ export class TranscriptWatcher {
     }
 
     return [];
+  }
+
+  private normalizeGlobPattern(inputPath: string): string {
+    return inputPath.replace(/\\/g, '/');
   }
 
   private hasGlob(inputPath: string): boolean {
@@ -177,8 +231,6 @@ export class TranscriptWatcher {
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
 
     let offset = this.state.offsets[filePath] ?? 0;
-    // `startAtEnd` is useful on worker startup to avoid replaying the full backlog,
-    // but new transcript files must be read from byte 0 or we lose session_meta/user_message.
     if (offset === 0 && watch.startAtEnd && initialDiscovery) {
       try {
         offset = statSync(filePath).size;
