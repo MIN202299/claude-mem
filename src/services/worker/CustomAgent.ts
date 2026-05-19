@@ -138,7 +138,6 @@ export class CustomAgent {
   }
 
   private prepareMessageMetadata(session: ActiveSession, message: { _persistentId: number; agentId?: string | null; agentType?: string | null }): void {
-    session.processingMessageIds.push(message._persistentId);
     session.pendingAgentId = message.agentId ?? null;
     session.pendingAgentType = message.agentType ?? null;
   }
