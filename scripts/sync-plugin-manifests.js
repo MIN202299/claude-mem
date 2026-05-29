@@ -7,6 +7,15 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 
+// Claude Code / Codex plugin identity. This must stay decoupled from the npm
+// package name: the npm package is published under a scoped name
+// (@min202299/claude-mem) so it doesn't collide with upstream on the registry,
+// but the plugin name must remain the simple slug "claude-mem" to match
+// marketplace.json and the `claude-mem@thedotmack` id used by the installer
+// (registerPlugin / enablePluginInClaudeSettings). Scoped names with `@` and
+// `/` are not valid plugin identifiers.
+const PLUGIN_NAME = 'claude-mem';
+
 const packageJsonPath = path.join(rootDir, 'package.json');
 const codexPluginPath = path.join(rootDir, '.codex-plugin', 'plugin.json');
 const bundledCodexPluginPath = path.join(rootDir, 'plugin', '.codex-plugin', 'plugin.json');
@@ -27,7 +36,7 @@ function syncCodexPlugin(plugin, pkg) {
 
   return {
     ...plugin,
-    name: pkg.name,
+    name: PLUGIN_NAME,
     version: pkg.version,
     description: pkg.description,
     homepage: pkg.homepage,
@@ -49,7 +58,7 @@ function syncCodexPlugin(plugin, pkg) {
 function syncClaudePlugin(plugin, pkg) {
   return {
     ...plugin,
-    name: pkg.name,
+    name: PLUGIN_NAME,
     version: pkg.version,
     description: pkg.description,
     homepage: pkg.homepage,

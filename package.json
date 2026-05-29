@@ -1,7 +1,7 @@
 {
-  "name": "claude-mem",
+  "name": "@min202299/claude-mem",
   "version": "13.0.1",
-  "description": "Memory compression system for Claude Code - persist context across sessions",
+  "description": "Memory compression system for Claude Code - persist context across sessions (fork with custom AI provider support)",
   "keywords": [
     "claude",
     "claude-code",
@@ -19,13 +19,16 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/thedotmack/claude-mem.git"
+    "url": "https://github.com/MIN202299/claude-mem.git"
   },
-  "homepage": "https://github.com/thedotmack/claude-mem#readme",
+  "homepage": "https://github.com/MIN202299/claude-mem#readme",
   "bugs": {
-    "url": "https://github.com/thedotmack/claude-mem/issues"
+    "url": "https://github.com/MIN202299/claude-mem/issues"
   },
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "claude-mem": "./dist/npx-cli/index.js"
   },

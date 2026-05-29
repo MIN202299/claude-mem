@@ -125,36 +125,40 @@
 
 ---
 
+> **Fork notice:** This is a fork of [thedotmack/claude-mem](https://github.com/thedotmack/claude-mem) that adds **custom AI provider support** (any OpenAI-compatible API as the LLM backend — see [Custom Provider Configuration](#custom-provider-configuration)). It is published on npm as [`@min202299/claude-mem`](https://www.npmjs.com/package/@min202299/claude-mem), so the install commands below use that scoped package name.
+
 ## Quick Start
 
 Install with a single command:
 
 ```bash
-npx claude-mem install
+npx @min202299/claude-mem install
 ```
 
 Or install for Gemini CLI (auto-detects `~/.gemini`):
 
 ```bash
-npx claude-mem install --ide gemini-cli
+npx @min202299/claude-mem install --ide gemini-cli
 ```
 Or install for OpenCode:
 
 ```bash
-npx claude-mem install --ide opencode
+npx @min202299/claude-mem install --ide opencode
 ```
 
 Or install from the plugin marketplace inside Claude Code:
 
 ```bash
-/plugin marketplace add thedotmack/claude-mem
+/plugin marketplace add MIN202299/claude-mem
 
 /plugin install claude-mem
 ```
 
 Restart Claude Code or Gemini CLI. Context from previous sessions will automatically appear in new sessions.
 
-> **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. Always install via `npx claude-mem install` or the `/plugin` commands above.
+> **Note:** The package is also importable as an SDK/library, but `npm install -g @min202299/claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. Always install via `npx @min202299/claude-mem install` or the `/plugin` commands above.
+>
+> Once installed, the CLI command itself is still `claude-mem` (e.g. `npx @min202299/claude-mem start`, `npx @min202299/claude-mem status`).
 
 ### 🦞 OpenClaw Gateway
 
@@ -464,11 +468,12 @@ open/commercial boundary.
 ## Support
 
 - **Documentation**: [docs/](docs/)
-- **Issues**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
-- **Repository**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
+- **Fork Issues**: [GitHub Issues](https://github.com/MIN202299/claude-mem/issues)
+- **Fork Repository**: [github.com/MIN202299/claude-mem](https://github.com/MIN202299/claude-mem)
+- **Upstream Repository**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
+- **Original Author**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
 - **Official X Account**: [@Claude_Memory](https://x.com/Claude_Memory)
 - **Official Discord**: [Join Discord](https://discord.com/invite/J4wttp9vDu)
-- **Author**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
 
 ---
 
